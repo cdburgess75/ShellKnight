@@ -223,7 +223,7 @@ $SK_Syslog_Facility              = 16
 # STRICT MODE & RUNTIME INITIALIZATION
 # ==============================================================================
 Set-StrictMode -Version 2
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'SilentlyContinue'
 $Script:RunStart = Get-Date
 
 # Runtime Config Object - single source of truth for all engines
@@ -1381,7 +1381,8 @@ if ($Script:Config.FilesystemEngine_Enabled) {
             if (-not (Test-Path $unPath)) { continue }
             $entries = @(Get-ChildItem -LiteralPath $unPath -ErrorAction SilentlyContinue)
             foreach ($entry in $entries) {
-                $dispName = (Get-ItemProperty -LiteralPath $entry.PSPath -Name DisplayName -ErrorAction SilentlyContinue).DisplayName
+                $regProps = Get-ItemProperty -LiteralPath $entry.PSPath -ErrorAction SilentlyContinue
+                $dispName = if ($null -ne $regProps -and $null -ne $regProps.PSObject.Properties['DisplayName']) { $regProps.DisplayName } else { $null }
                 if ($dispName -and ($puaFolders | Where-Object { $dispName -match $_ })) {
                     Log-IOC "PUA registry uninstall entry: $dispName"
                     Remove-Item -LiteralPath $entry.PSPath -Recurse -Force -ErrorAction SilentlyContinue
