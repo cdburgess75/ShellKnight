@@ -1100,6 +1100,7 @@ if ($Script:Config.ProcessEngine_Enabled) {
 
     foreach ($task in $activeTasks) {
         foreach ($action in $task.Actions) {
+            if (-not $action.PSObject.Properties['Execute']) { continue }
             $cmdLine  = "$($action.Execute) $($action.Arguments)"
             $isLegit  = $Script:LegitTaskPaths | Where-Object { $cmdLine -like $_ }
             $isObfusc = $obfuscPattern.IsMatch($cmdLine)
