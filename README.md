@@ -111,10 +111,10 @@ Built and maintained by **C. David Burgess — PTech LLC**.
 
 ## Quick Start
 
-**Run directly from GitHub (no download needed) — paste into an elevated PowerShell prompt:**
+**Run directly from GitHub — paste into an elevated PowerShell prompt:**
 
 ```powershell
-Set-ExecutionPolicy Bypass -Scope Process -Force; irm https://raw.githubusercontent.com/cdburgess75/ShellKnight/main/ShellKnight.ps1 | iex
+Set-ExecutionPolicy Bypass -Scope Process -Force; $f="$env:TEMP\ShellKnight.ps1"; irm https://raw.githubusercontent.com/cdburgess75/ShellKnight/main/ShellKnight.ps1 -OutFile $f; & $f
 ```
 
 **Or if already on disk:**
