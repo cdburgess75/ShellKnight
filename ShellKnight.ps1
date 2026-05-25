@@ -326,10 +326,10 @@ $Script:PSVer                     = $PSVersionTable.PSVersion.Major
 $Script:PSFullVer                 = "$($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor).$($PSVersionTable.PSVersion.Build).$($PSVersionTable.PSVersion.Revision)"
 
 # Pre-compiled IOC collections (populated by Intel Engine)
-$Script:HashIOCs     = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-$Script:FilenameIOCs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-$Script:C2IOCs       = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-$Script:FolderIOCs   = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+$Script:HashIOCs     = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
+$Script:FilenameIOCs = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
+$Script:C2IOCs       = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
+$Script:FolderIOCs   = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
 
 # Single-query caches - populated once, reused across all engines
 $Script:Cache_ARP        = $null   # Add/Remove Programs - populated in Assessment Engine
@@ -338,7 +338,7 @@ $Script:Cache_Processes  = $null   # All processes - populated in Process Engine
 $Script:Cache_Tasks      = $null   # All scheduled tasks - populated in Process Engine
 
 # Legitimate process/task whitelists
-$Script:LegitProcessNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+$Script:LegitProcessNames = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
 @(
     'CricutTaskbarApplication','CricutDesignSpace',
     'Zoom','Teams','Slack','Spotify','Discord','OneDrive','Dropbox','GoogleDrive','Box',
@@ -406,11 +406,7 @@ function Initialize-Logging {
     }
     $stamp = Get-Date -Format 'yyyy-MM-dd_HHmm'
     $Script:LogPath = "$logDir\ShellKnight_$stamp.log"
-    $Script:LogWriter = [System.IO.StreamWriter]::new(
-        $Script:LogPath,
-        $false,
-        [System.Text.Encoding]::UTF8
-    )
+    $Script:LogWriter = New-Object System.IO.StreamWriter -ArgumentList @($Script:LogPath, $false, [System.Text.Encoding]::UTF8)
     $Script:LogReady = $true
 }
 
@@ -546,7 +542,7 @@ $Script:FilenameIOCsLoaded = 0
 $Script:C2IOCsLoaded      = 0
 
 # Hardcoded fallback IOC patterns (used if download fails and no cache exists)
-$Script:FallbackFolderIOCs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+$Script:FallbackFolderIOCs = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
 @(
     'njrat','asyncrat','redline','vidar','lokibot','qakbot','remcos',
     'nanocore','darkcomet','adwind','jrat','limeRAT','quasar',
@@ -592,9 +588,9 @@ if ($Script:Config.IntelEngine_Enabled) {
         if (-not $useCache) {
             # Download and consolidate all sources into single cache
             $consolidated = @{
-                Filename = [System.Collections.Generic.List[string]]::new()
-                Hashes   = [System.Collections.Generic.List[string]]::new()
-                C2       = [System.Collections.Generic.List[string]]::new()
+                Filename = (New-Object 'System.Collections.Generic.List[string]')
+                Hashes   = (New-Object 'System.Collections.Generic.List[string]')
+                C2       = (New-Object 'System.Collections.Generic.List[string]')
                 Updated  = (Get-Date).ToString('o')
                 Source   = $Script:Config.IntelEngine_PrimarySource
             }
@@ -653,7 +649,7 @@ $osEolWarn          = $false
 $wuLastWarn         = $false
 $avProduct          = 'NONE DETECTED'
 $defStatus          = 'Unknown'
-$inactiveAccounts   = [System.Collections.Generic.List[object]]::new()
+$inactiveAccounts   = (New-Object 'System.Collections.Generic.List[object]')
 $Script:MinPasswordLen = 0
 
 if ($Script:Config.AssessmentEngine_Enabled) {
@@ -722,7 +718,7 @@ if ($Script:Config.AssessmentEngine_Enabled) {
         $ramGB = [math]::Round($cs.TotalPhysicalMemory / 1GB, 1)
 
         # AV Detection
-        $avProducts = [System.Collections.Generic.List[string]]::new()
+        $avProducts = (New-Object 'System.Collections.Generic.List[string]')
         try {
             $avList = Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName 'AntiVirusProduct' -ErrorAction Stop
             foreach ($av in $avList) {
@@ -1022,7 +1018,7 @@ if ($Script:Config.ProcessEngine_Enabled) {
     $Script:Cache_Tasks     = @(Get-ScheduledTask -ErrorAction SilentlyContinue)
 
     # Known malware process patterns
-    $malwareProcPatterns = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $malwareProcPatterns = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
     @(
         'njrat','asyncrat','redlinestealer','vidar','lokibot','remcos',
         'nanocore','darkcomet','adwind','quasar','limerat','agent tesla',
@@ -1033,7 +1029,7 @@ if ($Script:Config.ProcessEngine_Enabled) {
     ) | ForEach-Object { $null = $malwareProcPatterns.Add($_) }
 
     # Known malware service patterns
-    $malwareSvcPatterns = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $malwareSvcPatterns = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
     @(
         'winvnc','ultravnc','ammyy','netsupport','remotepc','gotomypc',
         'logmein123','teamviewerqs','atera','meshagent','rustdesk',
@@ -1071,7 +1067,7 @@ if ($Script:Config.ProcessEngine_Enabled) {
         'winnc','nvsvc32','MSUpdater','WindowsUpdaterService',
         'JavaUpdater','AdobeFlashUpdate'
     )
-    $malwareSvcHash = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $malwareSvcHash = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
     foreach ($s in $malwareSvcNames) { $null = $malwareSvcHash.Add($s) }
 
     foreach ($svc in $Script:Cache_Services) {
@@ -1093,10 +1089,9 @@ if ($Script:Config.ProcessEngine_Enabled) {
     if ($removedSvcs -eq 0) { Log-Summary "Process Engine  -  no malware services found" }
 
     # Scheduled task enumeration with forensic inspection
-    $obfuscPattern = [System.Text.RegularExpressions.Regex]::new(
+    $obfuscPattern = New-Object System.Text.RegularExpressions.Regex -ArgumentList @(
         'encodedcommand|frombase64|invoke-expression|iex |downloadstring|webclient|bypass|hidden|noprofile|-enc ',
-        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor
-        [System.Text.RegularExpressions.RegexOptions]::Compiled)
+        ([System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::Compiled))
 
     $activeTasks = @($Script:Cache_Tasks | Where-Object { $_.State -ne 'Disabled' })
     Log-Info "Process Engine  -  $($activeTasks.Count) active scheduled tasks"
@@ -1148,7 +1143,7 @@ Log-Info '--- Phase 5: Persistence Engine ---'
 if ($Script:Config.PersistenceEngine_Enabled) {
 
     # Known malware Run key executables
-    $malwareRunPatterns = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $malwareRunPatterns = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
     @(
         'njrat','asyncrat','remcos','nanocore','darkcomet','quasar',
         'formbook','emotet','trickbot','agent tesla','raccoon',
@@ -1263,7 +1258,7 @@ if ($Script:Config.PersistenceEngine_Enabled) {
     # Defender exclusion audit
     Invoke-SafeBlock -Label 'Defender exclusions' -Block {
         $excl = Get-MpPreference -ErrorAction Stop
-        $suspectExclusions = [System.Collections.Generic.List[string]]::new()
+        $suspectExclusions = (New-Object 'System.Collections.Generic.List[string]')
         $legitimateExclPaths = @('C:\Windows','C:\Program Files','C:\ProgramData\Datto','C:\ProgramData\ShellKnight')
 
         foreach ($path in $excl.ExclusionPath) {
@@ -1301,7 +1296,7 @@ if ($Script:Config.FilesystemEngine_Enabled) {
     } else {
 
         # Known PUA/malware drop locations
-        $dropLocations = [System.Collections.Generic.List[string]]::new()
+        $dropLocations = (New-Object 'System.Collections.Generic.List[string]')
         @(
             "$env:TEMP","$env:WINDIR\Temp",
             "$env:LOCALAPPDATA\Temp",
@@ -1310,7 +1305,7 @@ if ($Script:Config.FilesystemEngine_Enabled) {
         ) | ForEach-Object { $dropLocations.Add($_) }
 
         # Known PUA folder names (high confidence)
-        $puaFolders = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $puaFolders = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
         @(
             'Lavasoft','WebCompanion','Conduit','Babylon','SweetIM','OpenCandy',
             'Wajam','Crossrider','DealPly','BrowseFox','MyPCBackup','PCKeeper',
@@ -1349,7 +1344,7 @@ if ($Script:Config.FilesystemEngine_Enabled) {
 
         # Browser extension cleanup
         $extRemoved = 0
-        $badExtIDs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $badExtIDs = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
         @('cfhdojbkjhnklbpkdaibdccddilifddb','flliilndjeohchalpbbcdekjklbdgfkk') |
             ForEach-Object { $null = $badExtIDs.Add($_) }
 
@@ -1500,7 +1495,7 @@ if ($Script:Config.FilesystemEngine_Enabled) {
         }
 
         # Stale profile report
-        $staleProfiles = [System.Collections.Generic.List[object]]::new()
+        $staleProfiles = (New-Object 'System.Collections.Generic.List[object]')
         $staleCutoff   = (Get-Date).AddDays(-180)
         foreach ($userDir in $userDirs) {
             # Skip 8.3 short filename artifacts
@@ -1534,7 +1529,7 @@ if ($Script:Config.FilesystemEngine_Enabled) {
                     Log-Summary "Redirected folder scan  -  $($redirectedDrives.Count) non-C: drive(s) with Users folders"
                     $puaExts     = @('.exe','.bat','.cmd','.vbs','.js','.ps1','.msi','.scr')
                     $scanSubFolders = @('Downloads','Desktop','AppData\Local\Temp')
-                    $puaPattern  = [System.Text.RegularExpressions.Regex]::new(
+                    $puaPattern  = New-Object System.Text.RegularExpressions.Regex -ArgumentList @(
                         'toolbar|hijack|adware|pup|bundl|newssetup|crawler|conduit|babylon|sweet.?im',
                         [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
 
@@ -1570,10 +1565,10 @@ if ($Script:Config.FilesystemEngine_Enabled) {
             Invoke-SafeBlock -Label 'Large file finder' -Block {
                 $threshBytes   = [long]($Script:Config.LargeFileThresholdGB * 1GB)
                 $ostThreshBytes= [long]($Script:Config.LargeOSTThresholdGB * 1GB)
-                $vhdExts       = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                $vhdExts       = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
                 @('.vhd','.vhdx','.vmrs','.vmdk','.vdi','.ova','.ovf') | ForEach-Object { $null = $vhdExts.Add($_) }
 
-                $largeFiles = [System.Collections.Generic.List[object]]::new()
+                $largeFiles = (New-Object 'System.Collections.Generic.List[object]')
                 foreach ($scanPath in $Script:Config.LargeFileScanPaths) {
                     if (-not (Test-Path $scanPath)) { continue }
                     $found = @(Get-ChildItem -LiteralPath $scanPath -Recurse -Force -File -ErrorAction SilentlyContinue |
@@ -1626,7 +1621,7 @@ Log-Info '--- Phase 7: Detection Engine ---'
 if ($Script:Config.DetectionEngine_Enabled) {
 
     # Trojan/Malware folder IOC detection
-    $trojanFolderNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $trojanFolderNames = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
     @(
         'njrat','asyncrat','redlinestealer','vidar','lokibot','qakbot',
         'remcos','nanocore','darkcomet','adwind','jrat','limerat',
@@ -1637,7 +1632,7 @@ if ($Script:Config.DetectionEngine_Enabled) {
     $userDirs = @(Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue |
                   Where-Object { $_.Name -notmatch '^(Public|Default|All Users)$' })
 
-    $iocScanPaths = [System.Collections.Generic.List[string]]::new()
+    $iocScanPaths = (New-Object 'System.Collections.Generic.List[string]')
     @('C:\Users\Public','C:\Windows\Temp','C:\ProgramData') | ForEach-Object { $iocScanPaths.Add($_) }
     foreach ($ud in $userDirs) {
         $iocScanPaths.Add((Join-Path $ud.FullName 'AppData\Local\Temp'))
@@ -1670,7 +1665,7 @@ if ($Script:Config.DetectionEngine_Enabled) {
     if ($trojanHits -eq 0) { Log-Summary "Detection Engine  -  no trojan/malware IOC folders found" }
 
     # RiskWare detection
-    $riskwareNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $riskwareNames = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
     @('gamecrack','coinminer','miner','xmrig','minerd') | ForEach-Object { $null = $riskwareNames.Add($_) }
 
     $rwHits = 0
@@ -1691,7 +1686,7 @@ if ($Script:Config.DetectionEngine_Enabled) {
     if ($Script:Config.MBEnabled) {
         Invoke-SafeBlock -Label 'MalwareBazaar' -Block {
             $mbHits = 0
-            $hashFiles = [System.Collections.Generic.List[object]]::new()
+            $hashFiles = (New-Object 'System.Collections.Generic.List[object]')
             foreach ($scanPath in $iocScanPaths) {
                 if (-not (Test-Path $scanPath)) { continue }
                 $exeFiles = @(Get-ChildItem -LiteralPath $scanPath -Force -File -ErrorAction SilentlyContinue |
@@ -1737,7 +1732,7 @@ if ($Script:Config.DetectionEngine_Enabled) {
 
     # Ransomware canary check
     Invoke-SafeBlock -Label 'Ransomware canary' -Block {
-        $encPattern = [System.Text.RegularExpressions.Regex]::new(
+        $encPattern = New-Object System.Text.RegularExpressions.Regex -ArgumentList @(
             '\.(locked|encrypted|crypted|crypt|enc|ryk|wncry|wannacry|cerber|locky|zepto|thor|aaa|abc|xyz|zzz)$',
             [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
 
@@ -1761,11 +1756,11 @@ if ($Script:Config.DetectionEngine_Enabled) {
 
     # Network connection audit + listening ports inventory
     Invoke-SafeBlock -Label 'Network audit' -Block {
-        $suspectOwners = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $suspectOwners = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
         @('powershell','cmd','wscript','cscript','mshta','regsvr32','rundll32','nc','ncat','netcat') |
             ForEach-Object { $null = $suspectOwners.Add($_) }
 
-        $ratPorts = [System.Collections.Generic.HashSet[int]]::new()
+        $ratPorts = (New-Object 'System.Collections.Generic.HashSet[int]')
         @(4444,4445,1234,31337,8888,9999,6666,1337,50050,60000,65535) |
             ForEach-Object { $null = $ratPorts.Add($_) }
 
@@ -1832,12 +1827,12 @@ if ($Script:Config.DetectionEngine_Enabled) {
                 @{ Name='UltraVNC';             Services=@('uvnc_service');               Procs=@('winvnc*');              ARP='UltraVNC|TightVNC|RealVNC';  Tier='RAT'   }
             )
 
-            $foundTools = [System.Collections.Generic.List[string]]::new()
+            $foundTools = (New-Object 'System.Collections.Generic.List[string]')
 
             foreach ($tool in $remoteTools) {
                 $found = $false; $inARP = $false
                 $svcStatus = 'Not found'; $procStatus = 'Not running'
-                $version = ''; $instanceIDs = [System.Collections.Generic.List[string]]::new()
+                $version = ''; $instanceIDs = (New-Object 'System.Collections.Generic.List[string]')
 
                 # Use cached services - no re-query
                 $svcs = @($Script:Cache_Services | Where-Object {
@@ -2000,7 +1995,7 @@ if ($Script:Config.ReportingEngine_Enabled) {
     # Recently installed software
     Invoke-SafeBlock -Label 'Recent software' -Block {
         $cutoff30 = (Get-Date).AddDays(-30)
-        $torrentPUA = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $torrentPUA = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
         @('utorrent','bittorrent','vuze','limewire','frostwire','ares','bearshare','kazaa') |
             ForEach-Object { $null = $torrentPUA.Add($_) }
 
@@ -2030,7 +2025,7 @@ if ($Script:Config.ReportingEngine_Enabled) {
             StartTime = $sevenDaysAgo
         } -ErrorAction Stop | Select-Object -First 200)
 
-        $knownGoodSvcs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $knownGoodSvcs = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
         @('CagService','HUNTAgent','EndpointProtectionService2','WinDefend','MpsSvc','wuauserv') |
             ForEach-Object { $null = $knownGoodSvcs.Add($_) }
 
@@ -2106,8 +2101,8 @@ if ($Script:Config.ReportingEngine_Enabled) {
                         Where-Object { $_.InitialDetectionTime -gt (Get-Date).AddDays(-30) })
         if ($defThreats.Count -gt 0) {
             $archivePatterns = @('~Old Users','archive','backup','quarantine','AdwCleaner')
-            $activeThreats   = [System.Collections.Generic.List[object]]::new()
-            $historicalThreats = [System.Collections.Generic.List[object]]::new()
+            $activeThreats   = (New-Object 'System.Collections.Generic.List[object]')
+            $historicalThreats = (New-Object 'System.Collections.Generic.List[object]')
 
             foreach ($t in $defThreats) {
                 $threat = Get-MpThreat -ThreatID $t.ThreatID -ErrorAction SilentlyContinue
@@ -2225,7 +2220,7 @@ if ($Script:Config.ReportingEngine_Enabled) {
             '7-Zip'          = '23.0';  'VLC'            = '3.0.20'
             'Zoom'           = '6.0';   'Java'           = '21.0'
         }
-        $outdated = [System.Collections.Generic.List[string]]::new()
+        $outdated = (New-Object 'System.Collections.Generic.List[string]')
         foreach ($swName in $softwareVersions.Keys) {
             $match = @($Script:Cache_ARP | Where-Object { $_.DisplayName -match [regex]::Escape($swName) })
             if ($match.Count -gt 0 -and $match[0].DisplayVersion) {
