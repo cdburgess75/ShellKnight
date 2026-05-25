@@ -2315,9 +2315,9 @@ if ($Script:Config.ReportingEngine_Enabled) {
         if ($prevFiles.Count -gt 0) {
             $prev = Get-Content -LiteralPath $prevFiles[0].FullName -Raw | ConvertFrom-Json
             $prevDate = $prevFiles[0].LastWriteTime.ToString('yyyy-MM-dd')
-            $prevSec  = [int]($prev.security_score ?? 0)
-            $prevPerf = [int]($prev.performance_score ?? 0)
-            $prevIOC  = [int]($prev.ioc_alerts ?? 0)
+            $prevSec  = if ($null -ne $prev.security_score)   { [int]$prev.security_score   } else { 0 }
+            $prevPerf = if ($null -ne $prev.performance_score) { [int]$prev.performance_score } else { 0 }
+            $prevIOC  = if ($null -ne $prev.ioc_alerts)        { [int]$prev.ioc_alerts        } else { 0 }
 
             $secDelta  = $Script:SecurityScore - $prevSec
             $perfDelta = $Script:PerformanceScore - $prevPerf
