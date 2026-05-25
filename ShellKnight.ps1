@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v1.002  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v1.03  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,8 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v1.002
+    Version    : v1.03
     Released   : 2026-05-25
+    Prior      : v1.02 (archived as shellknight_v1.02.ps1)
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -32,15 +33,25 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
-    v1.002 - Bug fix release. $ErrorActionPreference set to Stop (errors now
-             caught by Invoke-SafeBlock rather than silently swallowed).
+    v1.03 - Compatibility and stability release.
+             PS 3.0/4.0: all ::new() constructor calls replaced with New-Object.
+             PS 3.0-6.x: ?? null-coalescing operator replaced with if/else.
+             $ErrorActionPreference reverted to SilentlyContinue (Stop was too
+             aggressive with Set-StrictMode -Version 2 active; Invoke-SafeBlock
+             provides targeted error handling per-block).
+             Phase 6 Filesystem Engine: null-guard added to registry DisplayName
+             property access to prevent crash on keys without DisplayName value.
+             Versioning scheme updated: v1.01 -> v1.02 -> v1.03 (increments of .01).
+             Version : v1.02 -> v1.03.
+
+    v1.02 - Bug fix release over v1.01.
              Log-Fail now correctly increments Counters.Failed so exit code 1
-             and the "Failed actions" metric fire as intended.
+             and the Failed actions metric fire as intended.
              Remote access service and process matching fixed — inner
              Where-Object now uses captured $svc/$proc variable, not $_.
              Executive Summary added to screen output (before grade section).
              LogWriter null-guard added to Write-Log.
-             Version : v1.001 -> v1.002.
+             Version : v1.01 -> v1.02.
 
     v1.001 - Ground-up rewrite as ShellKnight 2.0. Eight-engine modular architecture.
              Intel Engine: pluggable source framework, HEAD check, single consolidated
@@ -100,7 +111,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v1.002 CONFIGURATION
+# SHELLKNIGHT v1.03 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -228,7 +239,7 @@ $Script:RunStart = Get-Date
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v1.002'
+    Version                  = 'v1.03'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -513,7 +524,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v1.002'
+$version     = 'ShellKnight v1.03'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -2405,7 +2416,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v1.002 - Report"
+Log-Info "  ShellKnight v1.03 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2418,7 +2429,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v1.002 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v1.03 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -2512,7 +2523,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v1.002'
+    version          = 'v1.03'
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime

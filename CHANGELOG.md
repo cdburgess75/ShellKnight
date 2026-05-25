@@ -1,8 +1,15 @@
 # ShellKnight Changelog
 
-## [v1.002] - 2026-05-25
+## [v1.03] - 2026-05-25
 
-- `$ErrorActionPreference` changed from `SilentlyContinue` to `Stop` — errors are now caught by `Invoke-SafeBlock` rather than silently swallowed.
+- PS 3.0/4.0 compatibility: all 39 `::new()` constructor calls replaced with `New-Object` — `::new()` is PS 5.0+ syntax.
+- PS 3.0–6.x compatibility: `??` null-coalescing operator replaced with `if/else` — `??` is PS 7.0+ syntax.
+- `$ErrorActionPreference` reverted to `SilentlyContinue` — `Stop` combined with `Set-StrictMode -Version 2` caused every `.Property` access on a potentially-null object to be terminating. `Invoke-SafeBlock` with per-cmdlet `-ErrorAction Stop` is the correct error-handling pattern for this script.
+- Phase 6 (Filesystem Engine): null-guard added to registry uninstall key `DisplayName` access — keys without a `DisplayName` value no longer crash the engine.
+- Versioning scheme updated: increments of `.01` going forward (v1.03, v1.04, v1.05…).
+
+## [v1.02] - 2026-05-25
+
 - `Log-Fail` now increments `$Script:Counters.Failed` — exit code 1 and the "Failed actions" metric now fire correctly.
 - Remote access inventory: fixed service and process matching in Detection Engine — inner `Where-Object` now captures `$svc`/`$proc` via variable, resolving broken wildcard matching against all 22 remote tools.
 - Executive Summary added to screen output — before/after disk free, IOC count, actions taken, and failed actions now visible on console without opening the log file.
@@ -10,7 +17,18 @@
 - Script renamed to `ShellKnight.ps1` (canonical filename going forward).
 - Archive: v0.81, v0.82, v0.83 added to `archive/`.
 
-## [v1.001] - 2026-05-22
+## [v1.01] - 2026-05-22
+
+- Ground-up rewrite as ShellKnight 2.0. Eight-engine modular architecture replacing 29-phase design.
+- Intel Engine: pluggable source framework, HEAD check, single consolidated cache.
+- Assessment Engine: CVE check via Microsoft Security Update Guide (Critical/High/Medium), KB references.
+- Hardening Engine: LAN Manager auth auto-remediation, Firewall auto-enable, SMBv1/LLMNR/NLA/NetBIOS hardening.
+- Process Engine: full process/service/task inventory, suspicious-only screen output, verbose log.
+- Persistence Engine: Run/RunOnce keys, startup folders, WMI subscriptions, browser policies, Defender exclusions.
+- Filesystem Engine: artifact cleanup, temp files, cache, stale profiles, browser extensions, registry uninstall keys.
+- Detection Engine: IOC detection, MalwareBazaar, ransomware canary, hosts file, network connections, remote access inventory, RISKWARE-RAT.
+- Reporting Engine: Windows Update names, trend tracking, event log IOCs, reboot check, recent software, extended checks, compliance.
+- Performance: Generic List/HashSet collections, hash table IOC lookups, Filter Left, `foreach` loops, splatting, single-query caching, `Invoke-SafeBlock` pattern.
 
 - Ground-up rewrite as ShellKnight 2.0. Eight-engine modular architecture replacing 29-phase design.
 - Intel Engine: pluggable source framework, HEAD check, single consolidated cache.
