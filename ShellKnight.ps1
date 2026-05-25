@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v1.04  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v1.05  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v1.04
+    Version    : v1.05
     Released   : 2026-05-25
-    Prior      : v1.03
+    Prior      : v1.04
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,29 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v1.05 - Fleet feedback batch — false positive reduction and counter fixes.
+             NVDisplay/Intel feed FP: added CIM Win32_Process fallback when
+             Get-Process.Path returns null; fail-safe to SKIP (not kill) when
+             path is unavailable; path comparison upgraded to OrdinalIgnoreCase.
+             Scheduled task whitelist: Microsoft SMBv1 removal tasks
+             (\Microsoft\Windows\SMB\UninstallSMB1*) no longer flagged or deleted.
+             RiskWare miner pattern: changed bare 'miner' substring match to
+             word-boundary \bminer to prevent false positives on filenames
+             containing 'remineralization' or similar legitimate words.
+             Event 7045 whitelist expanded: Datto EDR Agent, Pml Driver HPZ12,
+             Net Driver HPZ12, IntelTACD, RapportIaso now suppressed.
+             IOC counter bug fix: browser extension removals and Event 7045
+             detections now correctly increment $Script:Counters.IOCsFound.
+             Local admin report: Domain Admins group suppressed (expected in
+             domain environments; not a false-positive admin account).
+             Stale profile exclusions: TEMP, UMFD-*, Font Driver Host, DWM-*
+             Windows system service profiles added to exclusion list.
+             Registry uninstall scan: replaced per-key Get-ItemProperty loop
+             with single wildcard batch query for performance on weak endpoints.
+             Counter init: Failed counter changed from $false to 0 to prevent
+             type inconsistency in JSON output.
+             Version : v1.04 -> v1.05.
+
     v1.04 - False positive fix: Intel feed filename IOC matches now check process
              executable path before flagging and killing. Processes running from
              C:\Windows\, C:\Program Files\, or C:\Program Files (x86)\ are
@@ -120,7 +143,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v1.04 CONFIGURATION
+# SHELLKNIGHT v1.05 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -248,7 +271,7 @@ $Script:RunStart = Get-Date
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v1.04'
+    Version                  = 'v1.05'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -333,7 +356,7 @@ $Script:Counters = @{
     RunKeysRemoved   = 0
     FilesRemoved     = 0
     UninstallsRun    = 0
-    Failed           = $false
+    Failed           = 0
     RebootRequired   = $false
     IntelSource      = 'Hardcoded fallback'
 }
@@ -371,6 +394,13 @@ $Script:LegitTaskPaths = @(
     '*Discord\*','*Cricut*','*AppData\Roaming\PCDr\*','*BundleApplicationRepairTool.exe*'
 )
 
+# Task Scheduler path prefixes for known-legitimate Microsoft system tasks.
+# Tasks living under these paths are skipped regardless of their command line.
+# Prevents false positives on OS-built-in tasks that use -ExecutionPolicy or -NoProfile.
+$Script:LegitTaskSchedulerPaths = @(
+    '\Microsoft\Windows\SMB\'     # SMBv1 auto-removal tasks (OS security feature)
+)
+
 # Known legitimate VNC paths (RMM-bundled components)
 $Script:LegitVNCPaths = @('CentraStage','Kaseya','LabTech','ConnectWise','NinjaRMM','Atera','N-able')
 
@@ -383,7 +413,12 @@ $Script:StaleProfileExclusions = @(
     'QBDataServiceUser26','QBDataServiceUser27','QBDataServiceUser28',
     'QBDataServiceUser29','QBDataServiceUser30','QBDataServiceUser31',
     'QBDataServiceUser32','QBDataServiceUser33','QBDataServiceUser34',
-    'QBDataServiceUser35'
+    'QBDataServiceUser35',
+    # Windows system service profiles - not real user profiles
+    '^TEMP$',       # Windows TEMP service account profile
+    '^UMFD-',       # User Mode Font Driver service profiles (UMFD-0, UMFD-1, etc.)
+    '^DWM-',        # Desktop Window Manager service profiles (DWM-1, DWM-2, etc.)
+    'Font Driver Host'  # Font Driver Host service profile
 )
 
 # Ransomware canary whitelist
@@ -533,7 +568,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v1.04'
+$version     = 'ShellKnight v1.05'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -1001,8 +1036,11 @@ if ($Script:Config.HardeningEngine_Enabled) {
         $admins = @(Get-LocalGroupMember -Group 'Administrators' -ErrorAction Stop)
         if ($admins.Count -gt 1) {
             Log-Warn "Local admins found ($($admins.Count) total)  -  review unexpected accounts:"
+            # Domain Admins group is expected on domain-joined machines - suppress noise
+            $suppressedAdminPatterns = @('Administrator$', '\\Domain Admins$')
             foreach ($a in $admins) {
-                if ($a.Name -notmatch 'Administrator$') {
+                $isSuppressed = $suppressedAdminPatterns | Where-Object { $a.Name -match $_ }
+                if (-not $isSuppressed) {
                     Log-Warn "  $($a.Name)  -  REVIEW: should this account be an admin?"
                 }
             }
@@ -1075,11 +1113,22 @@ if ($Script:Config.ProcessEngine_Enabled) {
         $inFilenameIOC = $Script:FilenameIOCs.Contains($proc.Name)
         if ($isMalware -or $inFilenameIOC) {
             # For Intel feed filename matches, verify the process isn't a legit binary
-            # running from a system path before flagging and killing
+            # running from a system path before flagging and killing.
+            # Get-Process.Path returns null for some kernel/driver processes (e.g. NVIDIA).
+            # Fall back to CIM Win32_Process for those cases. If path is still unavailable,
+            # fail safe: skip rather than kill.
             if ($inFilenameIOC -and -not $isMalware) {
                 $procPath = try { (Get-Process -Id $proc.Id -ErrorAction Stop).Path } catch { $null }
-                if ($procPath -and ($legitProcRoots | Where-Object { $procPath -like "$_*" })) {
-                    Log-Summary "Intel IOC name match: $($proc.Name) running from system path - likely legit, skipping ($procPath)"
+                if (-not $procPath) {
+                    $procPath = try { (Get-CimInstance Win32_Process -Filter "ProcessId=$($proc.Id)" -ErrorAction Stop).ExecutablePath } catch { $null }
+                }
+                if (-not $procPath) {
+                    Log-Summary "Intel IOC name match: $($proc.Name) - path unavailable, skipping (fail-safe)"
+                    continue
+                }
+                $resolvedPath = try { [System.IO.Path]::GetFullPath($procPath) } catch { $procPath }
+                if ($legitProcRoots | Where-Object { $resolvedPath.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) }) {
+                    Log-Summary "Intel IOC name match: $($proc.Name) running from system path - likely legit, skipping ($resolvedPath)"
                     continue
                 }
             }
@@ -1137,6 +1186,12 @@ if ($Script:Config.ProcessEngine_Enabled) {
     $suspectTasks = 0
 
     foreach ($task in $activeTasks) {
+        # Skip known-legitimate Microsoft system task scheduler paths entirely
+        $isLegitSchedulerPath = $Script:LegitTaskSchedulerPaths | Where-Object { $task.TaskPath -like "$_*" }
+        if ($isLegitSchedulerPath) {
+            Log-Info "  [TASK][SYSTEM] $($task.TaskName) - Microsoft system task path, skipping"
+            continue
+        }
         foreach ($action in $task.Actions) {
             if (-not $action.PSObject.Properties['Execute']) { continue }
             $cmdLine  = "$($action.Execute) $($action.Arguments)"
@@ -1399,6 +1454,7 @@ if ($Script:Config.FilesystemEngine_Enabled) {
                 foreach ($ext in $extDirs) {
                     if ($badExtIDs.Contains($ext.Name)) {
                         Log-IOC "Malware browser extension: $($ext.Name) in $extPath"
+                        $Script:Counters.IOCsFound++
                         Remove-Item -LiteralPath $ext.FullName -Recurse -Force -ErrorAction SilentlyContinue
                         Log-Success "Removed browser extension: $($ext.Name)"
                         $extRemoved++
@@ -1417,10 +1473,11 @@ if ($Script:Config.FilesystemEngine_Enabled) {
         )
         foreach ($unPath in $uninstallPaths) {
             if (-not (Test-Path $unPath)) { continue }
-            $entries = @(Get-ChildItem -LiteralPath $unPath -ErrorAction SilentlyContinue)
-            foreach ($entry in $entries) {
-                $regProps = Get-ItemProperty -LiteralPath $entry.PSPath -ErrorAction SilentlyContinue
-                $dispName = if ($null -ne $regProps -and $null -ne $regProps.PSObject.Properties['DisplayName']) { $regProps.DisplayName } else { $null }
+            # Batch all subkey properties in one query instead of per-key Get-ItemProperty calls
+            $allEntries = @(Get-ItemProperty -Path "$unPath\*" -ErrorAction SilentlyContinue)
+            foreach ($entry in $allEntries) {
+                if (-not $entry.PSObject.Properties['DisplayName']) { continue }
+                $dispName = $entry.DisplayName
                 if ($dispName -and ($puaFolders | Where-Object { $dispName -match $_ })) {
                     Log-IOC "PUA registry uninstall entry: $dispName"
                     Remove-Item -LiteralPath $entry.PSPath -Recurse -Force -ErrorAction SilentlyContinue
@@ -1706,8 +1763,10 @@ if ($Script:Config.DetectionEngine_Enabled) {
     if ($trojanHits -eq 0) { Log-Summary "Detection Engine  -  no trojan/malware IOC folders found" }
 
     # RiskWare detection
-    $riskwareNames = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
-    @('gamecrack','coinminer','miner','xmrig','minerd') | ForEach-Object { $null = $riskwareNames.Add($_) }
+    # Note: patterns are used as regex via -match. Use word boundaries (\b) to prevent
+    # substring false positives (e.g. 'miner' matching 'remineralization' in PDF filenames).
+    $riskwareNames = (New-Object 'System.Collections.Generic.List[string]')
+    @('gamecrack','coinminer','\bminer','xmrig','minerd') | ForEach-Object { $riskwareNames.Add($_) }
 
     $rwHits = 0
     foreach ($scanPath in $iocScanPaths) {
@@ -2067,8 +2126,22 @@ if ($Script:Config.ReportingEngine_Enabled) {
         } -ErrorAction Stop | Select-Object -First 200)
 
         $knownGoodSvcs = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
-        @('CagService','HUNTAgent','EndpointProtectionService2','WinDefend','MpsSvc','wuauserv') |
-            ForEach-Object { $null = $knownGoodSvcs.Add($_) }
+        @(
+            'CagService','HUNTAgent','EndpointProtectionService2','WinDefend','MpsSvc','wuauserv',
+            # HP printer driver services (installed with any HP printer software)
+            'Pml Driver HPZ12','Net Driver HPZ12',
+            # Datto EDR / Infocyte agent (may reinstall on update cycles)
+            'Datto EDR Agent',
+            # Intel driver update service
+            'IntelTACD',
+            # Trusteer Rapport banking security (high-frequency reinstall by design)
+            'RapportIaso'
+        ) | ForEach-Object { $null = $knownGoodSvcs.Add($_) }
+
+        # Path-based whitelist for known-good vendor paths (catches name variations)
+        $knownGoodSvcPaths = @(
+            'infocyte'   # Datto EDR / Infocyte agent path
+        )
 
         $svcGroups = @{}
         foreach ($evt in $svcEvents) {
@@ -2076,6 +2149,9 @@ if ($Script:Config.ReportingEngine_Enabled) {
             $svcPath = $evt.Properties[1].Value
             $svcAcct = $evt.Properties[4].Value
             if ($knownGoodSvcs.Contains($svcName)) { continue }
+            # Path-based whitelist - skip events from known-good vendor install paths
+            $isKnownGoodPath = $knownGoodSvcPaths | Where-Object { $svcPath -match $_ }
+            if ($isKnownGoodPath) { continue }
             $key = "$svcName|$svcPath"
             if ($svcGroups.ContainsKey($key)) {
                 $svcGroups[$key]['Count']++
@@ -2122,6 +2198,7 @@ if ($Script:Config.ReportingEngine_Enabled) {
             }
 
             Log-IOC "Event 7045 (Service Install) suspicious$countStr  -  First: $($g['FirstSeen'].ToString('yyyy-MM-dd HH:mm:ss')) | Svc: $($g['SvcName']) | Path: $($g['SvcPath'])"
+            $Script:Counters.IOCsFound++
         }
         if ($svcGroups.Count -eq 0) { Log-Summary "Event log  -  no suspicious service installs in last 7 days" }
     }
@@ -2550,7 +2627,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v1.04'
+    version          = 'v1.05'
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime
