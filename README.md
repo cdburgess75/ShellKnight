@@ -10,7 +10,7 @@
   <p><strong>Enterprise Endpoint Security & Remediation Tool</strong></p>
 
   <img src="https://img.shields.io/badge/PowerShell-3.0%2B-blue?style=for-the-badge" alt="PowerShell"/>
-  <img src="https://img.shields.io/badge/Version-1.002-success?style=for-the-badge" alt="v1.002"/>
+  <img src="https://img.shields.io/badge/Version-1.03-success?style=for-the-badge" alt="v1.03"/>
   <img src="https://img.shields.io/badge/Platform-Windows-0078D4?style=for-the-badge" alt="Windows"/>
   <img src="https://img.shields.io/badge/RMM-Datto%20%7C%20CentraStage-orange?style=for-the-badge" alt="Datto"/>
   <img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="MIT"/>
@@ -111,10 +111,18 @@ Built and maintained by **C. David Burgess — PTech LLC**.
 
 ## Quick Start
 
+**Run directly from GitHub (no download needed) — paste into an elevated PowerShell prompt:**
+
+```powershell
+Set-ExecutionPolicy Bypass -Scope Process -Force; irm https://raw.githubusercontent.com/cdburgess75/ShellKnight/main/ShellKnight.ps1 | iex
+```
+
+**Or if already on disk:**
+
 ```powershell
 # Run as Administrator
 Set-ExecutionPolicy Bypass -Scope Process -Force
-.\shellknight.ps1
+.\ShellKnight.ps1
 ```
 
 Output is written to:
@@ -239,6 +247,9 @@ ShellKnight is fully silent and headless — no user interaction, no popups, no 
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.03 | May 2026 | PS 3.0/4.0 compatibility (`::new()` → `New-Object`), `??` operator fix, ErrorActionPreference stabilized, Phase 6 null-guard |
+| v1.02 | May 2026 | Log-Fail counter fix, remote access matching fix, Executive Summary on screen |
+| v1.01 | May 2026 | Ground-up 8-engine rewrite — Intel, Assessment, Hardening, Process, Persistence, Filesystem, Detection, Reporting |
 | v0.79 | May 2026 | Phase progress indicator, CIS Benchmark Lite, startup impact classification |
 | v0.78 | May 2026 | Defender integration, PS script block audit, magic bytes audit, HIPAA/CJIS checks, WU names |
 | v0.77 | May 2026 | Risk delta reporting, large file finder, browser credential check, N-able detection, HIPAA/acceptable use |
