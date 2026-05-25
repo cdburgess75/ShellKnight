@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v1.03  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v1.04  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v1.03
+    Version    : v1.04
     Released   : 2026-05-25
-    Prior      : v1.02 (archived as shellknight_v1.02.ps1)
+    Prior      : v1.03
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,15 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v1.04 - False positive fix: Intel feed filename IOC matches now check process
+             executable path before flagging and killing. Processes running from
+             C:\Windows\, C:\Program Files\, or C:\Program Files (x86)\ are
+             skipped as legitimate system/vendor binaries (e.g. NVDisplay.Container
+             is a real NVIDIA driver process that appears in threat intel feeds as
+             a known impersonation target). Malware running from AppData/Temp/user
+             dirs is still caught and killed.
+             Version : v1.03 -> v1.04.
+
     v1.03 - Compatibility and stability release.
              PS 3.0/4.0: all ::new() constructor calls replaced with New-Object.
              PS 3.0-6.x: ?? null-coalescing operator replaced with if/else.
@@ -41,7 +50,7 @@
              provides targeted error handling per-block).
              Phase 6 Filesystem Engine: null-guard added to registry DisplayName
              property access to prevent crash on keys without DisplayName value.
-             Versioning scheme updated: v1.01 -> v1.02 -> v1.03 (increments of .01).
+             Versioning scheme updated to .01 increments.
              Version : v1.02 -> v1.03.
 
     v1.02 - Bug fix release over v1.01.
@@ -111,7 +120,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v1.03 CONFIGURATION
+# SHELLKNIGHT v1.04 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -239,7 +248,7 @@ $Script:RunStart = Get-Date
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v1.03'
+    Version                  = 'v1.04'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -524,7 +533,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v1.03'
+$version     = 'ShellKnight v1.04'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -1050,12 +1059,30 @@ if ($Script:Config.ProcessEngine_Enabled) {
 
     # Process enumeration - log all, screen only suspicious
     Log-Info "Process Engine  -  $($Script:Cache_Processes.Count) processes running"
+    # Paths that indicate a legitimate system or vendor binary - Intel IOC filename
+    # matches running from these locations are false positives (malware impersonation
+    # check: real malware runs from AppData/Temp/user dirs, not Program Files/System32)
+    $legitProcRoots = @(
+        'C:\Windows\',
+        'C:\Program Files\',
+        'C:\Program Files (x86)\'
+    )
+
     $killedProcs = 0
     foreach ($proc in $Script:Cache_Processes) {
         if ($Script:LegitProcessNames.Contains($proc.Name)) { continue }
-        $isMalware = $malwareProcPatterns | Where-Object { $proc.Name -match $_ }
+        $isMalware    = $malwareProcPatterns | Where-Object { $proc.Name -match $_ }
         $inFilenameIOC = $Script:FilenameIOCs.Contains($proc.Name)
         if ($isMalware -or $inFilenameIOC) {
+            # For Intel feed filename matches, verify the process isn't a legit binary
+            # running from a system path before flagging and killing
+            if ($inFilenameIOC -and -not $isMalware) {
+                $procPath = try { (Get-Process -Id $proc.Id -ErrorAction Stop).Path } catch { $null }
+                if ($procPath -and ($legitProcRoots | Where-Object { $procPath -like "$_*" })) {
+                    Log-Summary "Intel IOC name match: $($proc.Name) running from system path - likely legit, skipping ($procPath)"
+                    continue
+                }
+            }
             Log-IOC "Malware process detected: $($proc.Name) (PID: $($proc.Id))"
             try {
                 Stop-Process -Id $proc.Id -Force -ErrorAction Stop
@@ -2416,7 +2443,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v1.03 - Report"
+Log-Info "  ShellKnight v1.04 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2429,7 +2456,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v1.03 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v1.04 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -2523,7 +2550,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v1.03'
+    version          = 'v1.04'
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime

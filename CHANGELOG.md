@@ -1,5 +1,9 @@
 # ShellKnight Changelog
 
+## [v1.04] - 2026-05-25
+
+- Process Engine: Intel feed filename IOC matches now verify the process executable path before flagging and killing. Processes running from `C:\Windows\`, `C:\Program Files\`, or `C:\Program Files (x86)\` are treated as legitimate system/vendor binaries and skipped. Catches the `NVDisplay.Container` false positive (legitimate NVIDIA driver process that appears in threat intel as a known malware impersonation target). Malware running from `AppData`, `Temp`, or user directories is still caught and killed.
+
 ## [v1.03] - 2026-05-25
 
 - PS 3.0/4.0 compatibility: all 39 `::new()` constructor calls replaced with `New-Object` — `::new()` is PS 5.0+ syntax.
