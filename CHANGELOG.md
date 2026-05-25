@@ -1,5 +1,18 @@
 # ShellKnight Changelog
 
+## [v1.05] - 2026-05-25
+
+- **Process Engine — NVDisplay/Intel feed false positive fix (critical):** Added CIM `Win32_Process` fallback when `Get-Process.Path` returns null (occurs on NVIDIA driver processes and other kernel-adjacent processes). If path is still unavailable after CIM fallback, fail-safe to **skip** rather than kill. Path comparison upgraded to `OrdinalIgnoreCase` via `StartsWith`.
+- **Process Engine — Scheduled task whitelist:** Microsoft SMBv1 auto-removal tasks (`\Microsoft\Windows\SMB\UninstallSMB1ClientTask`, `\Microsoft\Windows\SMB\UninstallSMB1ServerTask`) are now whitelisted by task scheduler path. These are legitimate OS security tasks — previous builds incorrectly flagged and deleted them due to `-NoProfile` in their command line.
+- **Detection Engine — RiskWare miner pattern:** Changed bare `miner` substring match to `\bminer` (word-boundary regex) to prevent false positives on filenames containing `remineralization`, `rminerva`, or other legitimate words with `miner` as a substring. Confirmed false positive: dental research PDFs on PROVIDER1.
+- **Reporting Engine — Event 7045 whitelist expanded:** `Datto EDR Agent`, `Pml Driver HPZ12`, `Net Driver HPZ12`, `IntelTACD`, `RapportIaso` added to known-good service list. Infocyte agent path added as path-based whitelist. Prevents ShellKnight from flagging its own deployment platform's EDR agent and common HP printer drivers.
+- **IOC counter fix — browser extensions:** `$Script:Counters.IOCsFound` now increments on malware browser extension removals. Previously exit code showed 0 even when hijacker extensions were found and removed.
+- **IOC counter fix — Event 7045:** `$Script:Counters.IOCsFound` now increments on suspicious Event 7045 service installs. Previously exit code showed 0 on machines with IOC-level service events.
+- **Hardening Engine — Domain Admins suppression:** `DOMAIN\Domain Admins` group no longer flagged in local admin report. Expected on all domain-joined machines; was generating noise on every domain endpoint.
+- **Filesystem Engine — Stale profile exclusions:** Windows system service profiles (`TEMP`, `UMFD-*`, `DWM-*`, `Font Driver Host`) added to exclusion list. These are OS service account profiles, not real user profiles.
+- **Filesystem Engine — Registry uninstall scan optimization:** Replaced per-subkey `Get-ItemProperty` loop with single `Get-ItemProperty -Path "$unPath\*"` batch query. Reduces disk/CPU overhead on endpoints with many installed applications.
+- **Counter init fix:** `$Script:Counters.Failed` changed from `$false` to `0` — prevents type inconsistency in JSON output on first run.
+
 ## [v1.04] - 2026-05-25
 
 - Process Engine: Intel feed filename IOC matches now verify the process executable path before flagging and killing. Processes running from `C:\Windows\`, `C:\Program Files\`, or `C:\Program Files (x86)\` are treated as legitimate system/vendor binaries and skipped. Catches the `NVDisplay.Container` false positive (legitimate NVIDIA driver process that appears in threat intel as a known malware impersonation target). Malware running from `AppData`, `Temp`, or user directories is still caught and killed.

@@ -10,7 +10,7 @@
   <p><strong>Enterprise Endpoint Security & Remediation Tool</strong></p>
 
   <img src="https://img.shields.io/badge/PowerShell-3.0%2B-blue?style=for-the-badge" alt="PowerShell"/>
-  <img src="https://img.shields.io/badge/Version-1.04-success?style=for-the-badge" alt="v1.04"/>
+  <img src="https://img.shields.io/badge/Version-1.05-success?style=for-the-badge" alt="v1.05"/>
   <img src="https://img.shields.io/badge/Platform-Windows-0078D4?style=for-the-badge" alt="Windows"/>
   <img src="https://img.shields.io/badge/RMM-Datto%20%7C%20CentraStage-orange?style=for-the-badge" alt="Datto"/>
   <img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="MIT"/>
@@ -247,6 +247,7 @@ ShellKnight is fully silent and headless — no user interaction, no popups, no 
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.05 | May 2026 | Fleet feedback batch — NVDisplay CIM fallback, SMBv1 task whitelist, miner pattern word-boundary fix, Datto EDR/HP printer Event 7045 whitelist, IOC counter fixes, Domain Admins suppression, system profile exclusions, registry scan optimization |
 | v1.04 | May 2026 | False positive fix: Intel IOC filename matches now path-check before killing — legitimate system/vendor binaries (e.g. NVIDIA) no longer flagged |
 | v1.03 | May 2026 | PS 3.0/4.0 compatibility (`::new()` → `New-Object`), `??` operator fix, ErrorActionPreference stabilized, Phase 6 null-guard |
 | v1.02 | May 2026 | Log-Fail counter fix, remote access matching fix, Executive Summary on screen |
