@@ -6,10 +6,11 @@
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
-    reporting across 8 intelligent engines. Compatible with PowerShell 3.0
-    through 7.x. Detects PS version at runtime and adjusts behavior accordingly.
-    Designed for silent, headless deployment via Datto RMM / CentraStage and
-    other MSP RMM platforms.
+    reporting across 8 intelligent engines. Requires PowerShell 3.0 or later
+    on Windows 8 / Server 2012 or later. Some engines (Process, Defender,
+    Scheduled Tasks) require Windows 8+ cmdlets and will silently skip on
+    older OS versions. Designed for silent, headless deployment via Datto RMM /
+    CentraStage and other MSP RMM platforms.
 
     Built for MSPs, IT Administrators, and Security Professionals.
 
