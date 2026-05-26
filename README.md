@@ -48,7 +48,7 @@ ShellKnight is a component of the **[Fortress AI](https://github.com/cdburgess75
 
 ## Features
 
-- **29-phase intelligent remediation pipeline**
+- **8-engine modular remediation pipeline**
 - Dynamic IOC downloads from [Neo23x0/signature-base](https://github.com/Neo23x0/signature-base)
 - MalwareBazaar SHA256 hash lookup with API key support
 - Multi-layered AV/EDR detection — Datto AV, Huntress EDR, Windows Defender, COMODO, N-able, and more
@@ -60,7 +60,7 @@ ShellKnight is a component of the **[Fortress AI](https://github.com/cdburgess75
 - CIS Benchmark Lite (Level 1) — 9 key controls checked every run
 - PowerShell script block logging — enables 4104 auditing and scans for obfuscation
 - Windows Defender threat history and automatic Quick Scan on IOC detection
-- Phase progress indicator — real-time elapsed time per phase
+- Engine progress indicator — real-time elapsed time per engine
 - Stale profile detection with optional safe auto-deletion
 - Inactive account auto-disable with configurable threshold and server protection
 - Age-based temp file cleanup — only removes files older than configurable threshold
