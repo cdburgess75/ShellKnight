@@ -26,7 +26,7 @@
 
 ShellKnight is a fully silent, headless PowerShell endpoint remediation tool designed for MSP and RMM deployment. It runs 8 intelligent engines covering everything from PUP removal and malware IOC detection to hardening checks, compliance assessments, and security grading — all without any user interaction.
 
-Built and maintained by **C. David Burgess — PTech LLC**.
+Built and maintained by **ParaTech LLC**.
 
 ShellKnight is a component of the **[Fortress AI](https://github.com/cdburgess75/ShellKnight)** platform — a full MSP management stack being built to replace Datto RMM + Datto EDR.
 
