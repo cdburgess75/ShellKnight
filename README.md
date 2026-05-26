@@ -24,9 +24,11 @@
 
 ## What is ShellKnight?
 
-ShellKnight is a fully silent, headless PowerShell endpoint remediation tool designed for MSP and RMM deployment. It runs 29 intelligent phases covering everything from PUP removal and malware IOC detection to hardening checks, compliance assessments, and security grading — all without any user interaction.
+ShellKnight is a fully silent, headless PowerShell endpoint remediation tool designed for MSP and RMM deployment. It runs 8 intelligent engines covering everything from PUP removal and malware IOC detection to hardening checks, compliance assessments, and security grading — all without any user interaction.
 
 Built and maintained by **C. David Burgess — PTech LLC**.
+
+ShellKnight is a component of the **[Fortress AI](https://github.com/cdburgess75/ShellKnight)** platform — a full MSP management stack being built to replace Datto RMM + Datto EDR.
 
 ---
 
@@ -71,41 +73,20 @@ Built and maintained by **C. David Burgess — PTech LLC**.
 
 ---
 
-## Phase Overview
+## Engine Overview
 
-| Phase | Name | Description |
-|-------|------|-------------|
-| 0 | Hardware & OS Detection | System profiling, EOL detection, hardware age |
-| 1 | Dynamic Intelligence | Downloads latest hash, filename, and C2 IOCs from Neo23x0 |
-| 2 | Machine Assessment | Full health check, AV detection, uptime, BitLocker |
-| 3 | Process Termination | Kills PUP and adware processes |
-| 4 | Filesystem Cleanup | Removes PUP folders, drop-location EXEs |
-| 5 | Browser Extension Removal | Removes hijacker extensions |
-| 6 | Registry Uninstall | Removes PUP registry entries |
-| 7 | Service Removal | Removes PUP and malware services |
-| 8 | Scheduled Task Removal | Removes malicious scheduled tasks |
-| 9 | Run Key Cleanup | Removes malicious Run/RunOnce registry keys |
-| 10 | Startup Folder Cleanup | Removes malicious LNK startup entries |
-| 11 | Browser Policy Cleanup | Removes forced browser policy keys |
-| 12 | Defender Exclusion Cleanup | Removes suspicious Defender exclusions |
-| 13 | Hosts File Inspection | Detects C2 and hijacker domains in hosts file |
-| 14 | WMI Persistence Audit | Detects WMI-based malware persistence |
-| 15 | Trojan/Malware IOC Detection | RAT/stealer folder and filename IOC hunting |
-| 15b | RiskWare/Exploit/ScreenConnect | GameHack, CoinMiner, Dell CVE, rogue SC removal |
-| 16 | Reboot Check | Detects pending reboots from CBS/registry |
-| 17 | MalwareBazaar Hash Lookup | SHA256 analysis — MalwareBazaar → Neo23x0 → Defender |
-| 18 | Disk Space Cleanup | Temp, caches, CBS logs, WER, prefetch, thumbnails |
-| 19 | Recent Software Report | Last 30 days installs with torrent/PUP flagging |
-| 20 | Temp File Age Report | Flags neglected temp folders |
-| 21 | Event Log IOC Check | Event 7045 service install audit |
-| 22 | Hardening Checks | Password policy, RDP/NLA, SMBv1, LLMNR, NetBIOS, auditing |
-| 23 | USB/Removable Media Audit | Detects removable storage activity |
-| 24 | Network Connection Audit | Reviews active network connections |
-| 25 | Ransomware Canary | Detects encrypted file extension patterns |
-| 26 | Windows Update Check | Pending updates with KB titles and severity |
-| 27 | Stale Profile Report | Inactive profiles with optional safe deletion |
-| 28 | Trend Tracking | Compares grades to previous run JSON |
-| 29 | Extended Checks | Large files, browser creds, N-able detection, HIPAA, CJIS, CIS, magic bytes, Defender history |
+ShellKnight runs 8 engines in sequence. Each engine is independently enable/disable configurable.
+
+| Engine | Name | What it does |
+|--------|------|--------------|
+| 1 | Intel Engine | Downloads latest hash, filename, and C2 IOCs from Neo23x0. Falls back to hardcoded IOCs if offline. |
+| 2 | Assessment Engine | Machine baseline — hardware, OS, uptime, domain, AV/EDR detection, BitLocker, CVE check |
+| 3 | Hardening Engine | Password policy, RDP/NLA, SMBv1, LLMNR, NetBIOS, firewall, local admin audit, process auditing |
+| 4 | Process Engine | Kills malware processes, removes malicious services, removes malicious scheduled tasks |
+| 5 | Persistence Engine | Run/RunOnce keys, startup folders, WMI subscriptions, browser policies, Defender exclusions |
+| 6 | Filesystem Engine | Temp/cache cleanup, browser extension removal, PUA registry keys, stale profile report, large file finder |
+| 7 | Detection Engine | Trojan/RAT IOC scan, RiskWare detection, MalwareBazaar hash lookup, hosts file, ransomware canary, network connections, remote access inventory |
+| 8 | Reporting Engine | Windows Update names, trend tracking, event log IOC check (7045), USB audit, recent software, HIPAA/CJIS/CIS compliance, Defender history |
 
 ---
 
@@ -224,11 +205,19 @@ ShellKnight assigns A–F grades for Security and Performance.
 
 ### Datto RMM / CentraStage
 
-1. Upload `shellknight.ps1` as a Component
-2. Set execution policy: `-ExecutionPolicy Bypass`
-3. Run as: `SYSTEM`
-4. Capture stdout for report review
-5. Check exit code — alert on `2` (IOC present)
+> **Important:** Do not upload `ShellKnight.ps1` directly as a Component. At 145 KB the script exceeds Datto's inline component size limit and will be silently truncated, causing a parse error at runtime. Use the one-liner Component below instead.
+
+Create a PowerShell Component with the following content:
+
+```powershell
+Set-ExecutionPolicy Bypass -Scope Process -Force; $f="$env:TEMP\ShellKnight.ps1"; irm https://raw.githubusercontent.com/cdburgess75/ShellKnight/main/ShellKnight.ps1 -OutFile $f; & $f
+```
+
+- Run as: `SYSTEM`
+- Capture stdout for report review
+- Alert on exit code `2` (IOC present)
+
+The Component downloads the latest version from GitHub to `%TEMP%` on each run, so fleet-wide updates are instant — no component re-uploads required.
 
 ShellKnight is fully silent and headless — no user interaction, no popups, no reboots triggered automatically.
 

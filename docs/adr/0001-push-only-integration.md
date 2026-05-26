@@ -6,7 +6,7 @@
 
 ## Context
 
-Phase 1 of KnightRMM requires ShellKnight and Battlefield to be connected. The question was whether Battlefield should only receive data from endpoints, or also be able to send commands back (trigger scans, push config, etc.). ShellKnight currently has no persistent process on the endpoint — it runs on demand via RMM and exits.
+Phase 1 of Fortress AI requires ShellKnight and Battlefield to be connected. The question was whether Battlefield should only receive data from endpoints, or also be able to send commands back (trigger scans, push config, etc.). ShellKnight currently has no persistent process on the endpoint — it runs on demand via RMM and exits.
 
 ## Decision
 
