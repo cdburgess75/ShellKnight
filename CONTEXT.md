@@ -1,10 +1,10 @@
-# Context: KnightRMM Platform
+# Context: Fortress AI
 
 Full-stack MSP platform authored by C. David Burgess, PTech LLC. Goal: replace Datto RMM + Datto EDR. Components are independently deployable and communicate through well-defined boundaries.
 
 ## Terms
 
-### KnightRMM
+### Fortress AI
 
 The full platform name. Comprises multiple named components (ShellKnight, Battlefield, Squire, etc.). Not a single application — a family of tools designed to be deployed together or independently.
 
@@ -14,7 +14,7 @@ The endpoint security remediation engine. A single PowerShell script that runs h
 
 ### Battlefield
 
-The central command-and-control dashboard for KnightRMM. A web application (FastAPI + Jinja2, PostgreSQL backend) that receives Run Reports from ShellKnight, stores them, and displays fleet health. In Phase 1, Battlefield is read-only — it receives data but does not send commands to endpoints.
+The central command-and-control dashboard for Fortress AI. A web application (FastAPI + Jinja2, PostgreSQL backend) that receives Run Reports from ShellKnight, stores them, and displays fleet health. In Phase 1, Battlefield is read-only — it receives data but does not send commands to endpoints.
 
 ### Tenant
 
@@ -44,4 +44,4 @@ The Battlefield FastAPI route that receives Run Reports from ShellKnight. Accept
 
 ### Phase 1
 
-The first milestone of KnightRMM development. Scope: ShellKnight POSTs Run Reports to Battlefield; Battlefield stores and displays them in the Fleet Grid. No reverse channel, no commands sent to endpoints, no persistent agent. Completion criteria: fleet data flowing into a live dashboard.
+The first milestone of Fortress AI development. Scope: ShellKnight POSTs Run Reports to Battlefield; Battlefield stores and displays them in the Fleet Grid. No reverse channel, no commands sent to endpoints, no persistent agent. Completion criteria: fleet data flowing into a live dashboard.
