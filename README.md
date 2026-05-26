@@ -35,7 +35,7 @@ ShellKnight is a component of the **[Fortress AI](https://github.com/cdburgess75
 ## Contents
 
 1. [Features](#features)
-2. [Phase Overview](#phase-overview)
+2. [Engine Overview](#engine-overview)
 3. [Quick Start](#quick-start)
 4. [Configuration](#configuration)
 5. [Output & Reporting](#output--reporting)
@@ -228,7 +228,7 @@ ShellKnight is fully silent and headless — no user interaction, no popups, no 
 - Windows 7 / Server 2008 R2 or later
 - PowerShell 3.0 or later
 - Administrator / SYSTEM privileges
-- Internet access for Phase 1 Intel download (falls back to hardcoded IOCs if unavailable)
+- Internet access for Intel Engine IOC download (falls back to hardcoded IOCs if unavailable)
 
 ---
 
