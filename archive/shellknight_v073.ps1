@@ -457,7 +457,7 @@ $SK_Syslog_Facility = 16                        # 16 = local0 (standard for secu
 
 # --- MALWAREBAZAAR ---
 $SK_MalwareBazaar_Enabled = $true
-$SK_MalwareBazaar_ApiKey  = 'REDACTED_API_KEY_REMOVED'
+$SK_MalwareBazaar_ApiKey  = ''''
 
 # --- ACCOUNT MANAGEMENT ---
 $SK_AutoDisableInactiveAccounts = $false        # Set $true to auto-disable inactive local accounts
