@@ -223,7 +223,7 @@ $SK_MinFreeSpaceGB               = 2.0      # Warn if free space is below this (
 # audits network connections, and inventories all remote access tools.
 $SK_DetectionEngine_Enabled      = $true    # Enable/disable Detection Engine
 $SK_MalwareBazaar_Enabled        = $true    # Enable MalwareBazaar hash lookups
-$SK_MalwareBazaar_ApiKey         = ''       # MalwareBazaar API key (leave empty for anonymous)
+$SK_MalwareBazaar_ApiKey         = if ($env:SK_MalwareBazaar_ApiKey) { $env:SK_MalwareBazaar_ApiKey } else { '' }
 $SK_RemoteAccessInventory        = $true    # Inventory all remote access tools found
 $SK_RemoteAccessWarnUnknown      = $true    # WARN on remote tools not in Add/Remove Programs
 $SK_ScreenConnect_InstanceID     = ''       # Your managed ScreenConnect instance ID
