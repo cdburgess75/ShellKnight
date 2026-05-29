@@ -493,7 +493,7 @@ $SK_Syslog_Facility = 16                        # 16 = local0 (standard for secu
 
 # --- MALWAREBAZAAR ---
 $SK_MalwareBazaar_Enabled = $true
-$SK_MalwareBazaar_ApiKey  = 'REDACTED_API_KEY_REMOVED'
+$SK_MalwareBazaar_ApiKey  = ''''
 
 # --- SCREENCONNECT ROGUE INSTANCE DETECTION ---
 $SK_ScreenConnect_InstanceID   = '32f7367870097776'  # Your managed SC instance ID
