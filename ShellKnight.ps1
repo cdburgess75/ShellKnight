@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v1.05  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.06.04.001  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v1.05
-    Released   : 2026-05-25
-    Prior      : v1.04
+    Version    : v2026.06.04.001
+    Released   : 2026-06-04
+    Prior      : v1.05
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,7 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.06.04.001 - Version scheme migration to date-based versioning.
     v1.05 - Fleet feedback batch — false positive reduction and counter fixes.
              NVDisplay/Intel feed FP: added CIM Win32_Process fallback when
              Get-Process.Path returns null; fail-safe to SKIP (not kill) when
@@ -143,7 +144,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v1.05 CONFIGURATION
+# SHELLKNIGHT v2026.06.04.001 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -271,7 +272,7 @@ $Script:RunStart = Get-Date
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v1.05'
+    Version                  = 'v2026.06.04.001'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -568,7 +569,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v1.05'
+$version     = 'ShellKnight v2026.06.04.001'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -2520,7 +2521,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v1.04 - Report"
+Log-Info "  ShellKnight v2026.06.04.001 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2533,7 +2534,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v1.04 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.06.04.001 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -2627,7 +2628,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v1.05'
+    version          = 'v2026.06.04.001'
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime
