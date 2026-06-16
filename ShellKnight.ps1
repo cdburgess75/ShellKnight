@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.06.04.001  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.06.16.001  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,8 +18,8 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.06.04.001
-    Released   : 2026-06-04
+    Version    : v2026.06.16.001
+    Released   : 2026-06-16
     Prior      : v1.05
 
 .ENGINES
@@ -33,7 +33,10 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
-    v2026.06.04.001 - Version scheme migration to date-based versioning.
+    v2026.06.16.001 - Version scheme migration to date-based versioning.
+             Phase 6 perf: C:\Users now walked ONCE (single-pass Get-ProfileScan
+             via .NET enumerator) instead of twice — feeds both stale-profile
+             sizing and the large-file finder. Large-file display capped at 50.
     v1.05 - Fleet feedback batch — false positive reduction and counter fixes.
              NVDisplay/Intel feed FP: added CIM Win32_Process fallback when
              Get-Process.Path returns null; fail-safe to SKIP (not kill) when
@@ -144,7 +147,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.06.04.001 CONFIGURATION
+# SHELLKNIGHT v2026.06.16.001 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -272,7 +275,7 @@ $Script:RunStart = Get-Date
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.06.04.001'
+    Version                  = 'v2026.06.16.001'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -528,6 +531,41 @@ function Get-FolderSizeBytes {
     } catch { 0L }
 }
 
+# Fast single-pass scan of a user-profiles root.
+# Walks the tree ONCE via the .NET enumerator (3-6x faster than Get-ChildItem -Recurse)
+# and returns BOTH per-top-level-folder byte totals and files over a threshold.
+# Replaces two separate full traversals (stale-profile sizing + large-file finder).
+function Get-ProfileScan {
+    param(
+        [string]$Root,
+        [long]$LargeThresholdBytes,
+        [System.Collections.Generic.HashSet[string]]$ExcludeExts
+    )
+    $sizes = @{}                                              # profileName -> total bytes
+    $large = New-Object 'System.Collections.Generic.List[object]'
+    if (-not [System.IO.Directory]::Exists($Root)) {
+        return [PSCustomObject]@{ Sizes = $sizes; Large = $large }
+    }
+    foreach ($profileDir in [System.IO.Directory]::EnumerateDirectories($Root)) {
+        $profileName = [System.IO.Path]::GetFileName($profileDir)
+        $total = 0L
+        try {
+            foreach ($file in [System.IO.Directory]::EnumerateFiles($profileDir, '*', [System.IO.SearchOption]::AllDirectories)) {
+                try { $len = (New-Object System.IO.FileInfo $file).Length } catch { continue }
+                $total += $len
+                if ($len -gt $LargeThresholdBytes) {
+                    $ext = [System.IO.Path]::GetExtension($file).ToLower()
+                    if (-not $ExcludeExts.Contains($ext)) {
+                        $large.Add([PSCustomObject]@{ FullName = $file; Length = $len; Extension = $ext })
+                    }
+                }
+            }
+        } catch { }
+        $sizes[$profileName] = $total
+    }
+    [PSCustomObject]@{ Sizes = $sizes; Large = $large }
+}
+
 # Remove folder contents with before/after reporting
 function Remove-FolderContents {
     param([string]$Path, [string]$Label)
@@ -569,7 +607,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.06.04.001'
+$version     = 'ShellKnight v2026.06.16.001'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -1593,6 +1631,15 @@ if ($Script:Config.FilesystemEngine_Enabled) {
             }
         }
 
+        # Single-pass scan of C:\Users — feeds BOTH stale-profile sizing and the
+        # large-file finder below, replacing two full recursive traversals with one.
+        $largeThreshBytes = if ($Script:Config.LargeFileThresholdGB -gt 0) {
+            [long]($Script:Config.LargeFileThresholdGB * 1GB)
+        } else { [long]::MaxValue }   # threshold disabled: still collect sizes, skip large files
+        $vhdExts = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
+        @('.vhd','.vhdx','.vmrs','.vmdk','.vdi','.ova','.ovf') | ForEach-Object { $null = $vhdExts.Add($_) }
+        $Script:ProfileScan = Get-ProfileScan -Root 'C:\Users' -LargeThresholdBytes $largeThreshBytes -ExcludeExts $vhdExts
+
         # Stale profile report
         $staleProfiles = (New-Object 'System.Collections.Generic.List[object]')
         $staleCutoff   = (Get-Date).AddDays(-180)
@@ -1605,7 +1652,8 @@ if ($Script:Config.FilesystemEngine_Enabled) {
             if ($userDir.Name -match '^(SM_|HealthMailbox)') { continue }
             $lastActivity = $userDir.LastWriteTime
             if ($lastActivity -lt $staleCutoff) {
-                $sizeGB  = [math]::Round((Get-FolderSizeBytes $userDir.FullName) / 1GB, 2)
+                $cachedBytes = if ($Script:ProfileScan.Sizes.ContainsKey($userDir.Name)) { $Script:ProfileScan.Sizes[$userDir.Name] } else { Get-FolderSizeBytes $userDir.FullName }
+                $sizeGB  = [math]::Round($cachedBytes / 1GB, 2)
                 $daysOld = ([datetime]::Now - $lastActivity).Days
                 $staleProfiles.Add([PSCustomObject]@{
                     Name         = $userDir.Name
@@ -1670,14 +1718,19 @@ if ($Script:Config.FilesystemEngine_Enabled) {
                 $largeFiles = (New-Object 'System.Collections.Generic.List[object]')
                 foreach ($scanPath in $Script:Config.LargeFileScanPaths) {
                     if (-not (Test-Path $scanPath)) { continue }
+                    # C:\Users was already walked once above — reuse those results instead of re-scanning.
+                    if ($scanPath -eq 'C:\Users' -and $Script:ProfileScan) {
+                        foreach ($f in $Script:ProfileScan.Large) { $largeFiles.Add($f) }
+                        continue
+                    }
                     $found = @(Get-ChildItem -LiteralPath $scanPath -Recurse -Force -File -ErrorAction SilentlyContinue |
-                               Where-Object { $_.Length -gt $threshBytes -and -not $vhdExts.Contains($_.Extension.ToLower()) } |
-                               Select-Object -First 20)
+                               Where-Object { $_.Length -gt $threshBytes -and -not $vhdExts.Contains($_.Extension.ToLower()) })
                     foreach ($f in $found) { $largeFiles.Add($f) }
                 }
                 if ($largeFiles.Count -gt 0) {
                     Log-Warn "Large files (>$($Script:Config.LargeFileThresholdGB) GB) found  -  $($largeFiles.Count) file(s):"
-                    foreach ($f in $largeFiles | Sort-Object Length -Descending) {
+                    if ($largeFiles.Count -gt 50) { Log-Warn "  (showing largest 50 of $($largeFiles.Count))" }
+                    foreach ($f in $largeFiles | Sort-Object Length -Descending | Select-Object -First 50) {
                         $sizeGB = [math]::Round($f.Length / 1GB, 2)
                         $isOST  = $f.Extension -eq '.ost' -and $f.Length -gt $ostThreshBytes
                         $isPST  = $f.Extension -eq '.pst' -and $f.FullName -match 'OneDrive|SharePoint|Dropbox'
@@ -2521,7 +2574,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.06.04.001 - Report"
+Log-Info "  ShellKnight v2026.06.16.001 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2534,7 +2587,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.06.04.001 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.06.16.001 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -2628,7 +2681,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.06.04.001'
+    version          = 'v2026.06.16.001'
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime
