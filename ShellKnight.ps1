@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.06.24.001  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.06.24.002  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.06.24.001
+    Version    : v2026.06.24.002
     Released   : 2026-06-24
-    Prior      : v2026.06.16.001
+    Prior      : v2026.06.24.001
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,16 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.06.24.002 - REAL ISSUES WORTH ACTING ON report section.
+             New findings ledger (Add-Finding) collects prioritized High/
+             Medium/Low issues during the run; report prints them grouped
+             by severity with a recommended action per line. Every IOC
+             auto-registers as a High finding. Instrumented: RDP/NLA,
+             SMBv1, NetBIOS, local admins (Domain Users = High), BitLocker,
+             Defender exclusions, stale profiles (aggregate), large files
+             (aggregate), pending updates, CIS password length.
+             JSON: new 'findings' array + 'failed_actions' count;
+             ConvertTo-Json now -Depth 4.
     v2026.06.24.001 - Field FP batch + SC removal safety (RAS1 2026-06-02,
              HOPECENTER 2026-06-24 runs).
              Event 7045 whitelist: CentraStage svc/path (Datto RMM + bundled
@@ -159,7 +169,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.06.24.001 CONFIGURATION
+# SHELLKNIGHT v2026.06.24.002 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -292,7 +302,7 @@ $Script:RunStart = Get-Date
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.06.24.001'
+    Version                  = 'v2026.06.24.002'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -515,10 +525,36 @@ function Log-Info        { param([string]$m) Write-Log -Message $m -Level 'INFO'
 function Log-Success     { param([string]$m) Write-Log -Message $m -Level 'SUCCESS' }
 function Log-Warn        { param([string]$m) Write-Log -Message $m -Level 'WARN'    }
 function Log-Fail        { param([string]$m) Write-Log -Message $m -Level 'FAILED'; $Script:Counters.Failed++  }
-function Log-IOC         { param([string]$m) Write-Log -Message $m -Level 'IOC'     }
+function Log-IOC         {
+    param([string]$m)
+    Write-Log -Message $m -Level 'IOC'
+    # Indented lines are continuations of the previous IOC - don't double-count
+    if ($m -notmatch '^\s') {
+        Add-Finding -Severity High -Title "IOC: $m" -Action 'Investigate; if legitimate software, whitelist via SK_Svc7045_ExtraNames/ExtraPaths'
+    }
+}
 function Log-Harden      { param([string]$m) Write-Log -Message $m -Level 'HARDEN'  }
 function Log-RiskwareRAT { param([string]$m) Write-Log -Message $m -Level 'RISKWARE-RAT' }
 function Log-Summary     { param([string]$m) Write-Log -Message $m -Level 'SUMMARY' }
+
+# ------------------------------------------------------------------------------
+# Findings ledger - feeds the "REAL ISSUES WORTH ACTING ON" report section.
+# Engines call Add-Finding when a check produces something an operator should
+# review; the Reporting Engine prints them grouped High/Medium/Low.
+# ------------------------------------------------------------------------------
+$Script:Findings = (New-Object 'System.Collections.Generic.List[object]')
+function Add-Finding {
+    param(
+        [ValidateSet('High','Medium','Low')][string]$Severity,
+        [string]$Title,     # short label, e.g. 'RDP enabled, NLA not enforced'
+        [string]$Action     # recommended next step for the operator
+    )
+    $Script:Findings.Add([PSCustomObject]@{
+        Severity = $Severity
+        Title    = $Title
+        Action   = $Action
+    })
+}
 
 # ==============================================================================
 # HELPER FUNCTIONS
@@ -626,7 +662,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.06.24.001'
+$version     = 'ShellKnight v2026.06.24.002'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -917,7 +953,10 @@ if ($Script:Config.AssessmentEngine_Enabled) {
         # Screen summary
         Write-Host "  Hostname: $($env:COMPUTERNAME)  |  OS: $osName  |  RAM: $ramGB GB  |  Disk: $diskFreeGB GB free" -ForegroundColor White
         if ($osEolWarn)    { Log-Warn "OS EOL: $eolStr" }
-        if ($bitlockerWarn){ Log-Warn "BitLocker: C: drive is NOT encrypted" }
+        if ($bitlockerWarn){
+            Log-Warn "BitLocker: C: drive is NOT encrypted"
+            Add-Finding -Severity Medium -Title 'BitLocker not enabled on C:' -Action 'Enable BitLocker (required for HIPAA/CJIS clients; escrow recovery key in AD/RMM)'
+        }
         if ($pcAgeYrs -gt 5){ Log-Warn "Aging hardware: PC is $pcAgeYrs years (BIOS: $($biosDate.ToString('yyyy-MM-dd')))" }
         if ($wuLastWarn)   { Log-Warn "Windows Update: last install was $wuDaysAgo days ago" }
 
@@ -1017,6 +1056,7 @@ if ($Script:Config.HardeningEngine_Enabled) {
                 Log-Summary "RDP is ENABLED  -  NLA enforced (OK)"
             } else {
                 Log-Warn "RDP is ENABLED  -  NLA NOT enforced  -  recommend enabling"
+                Add-Finding -Severity Medium -Title 'RDP enabled, NLA not enforced' -Action 'Enable NLA via GPO: Computer Config > Admin Templates > Remote Desktop Services'
             }
         } else {
             Log-Summary "RDP  -  disabled (OK)"
@@ -1032,6 +1072,7 @@ if ($Script:Config.HardeningEngine_Enabled) {
                 Log-Harden "SMBv1 disabled  -  legacy protocol eliminated"
             } else {
                 Log-Warn "SMBv1 is ENABLED  -  critical vulnerability, recommend disabling"
+                Add-Finding -Severity High -Title 'SMBv1 protocol enabled' -Action 'Disable SMBv1 (set $SK_DisableSMBv1=$true or disable manually); verify no legacy devices need it'
             }
         } else { Log-Summary "SMBv1  -  disabled (OK)" }
     }
@@ -1061,7 +1102,10 @@ if ($Script:Config.HardeningEngine_Enabled) {
                     try { $r = $adapter.SetTcpipNetbios(2); if ($r.ReturnValue -eq 0) { $disabled++ } } catch { }
                 }
                 if ($disabled -gt 0) { Log-Harden "NetBIOS disabled on $disabled adapter(s)" }
-            } else { Log-Warn "NetBIOS over TCP/IP may be enabled on $($netbiosOn.Count) adapter(s)  -  recommend disabling" }
+            } else {
+                Log-Warn "NetBIOS over TCP/IP may be enabled on $($netbiosOn.Count) adapter(s)  -  recommend disabling"
+                Add-Finding -Severity Medium -Title "NetBIOS over TCP/IP enabled ($($netbiosOn.Count) adapter(s))" -Action 'Disable via DHCP scope option or adapter WINS settings'
+            }
         } else { Log-Summary "NetBIOS  -  disabled on all adapters (OK)" }
     }
 
@@ -1100,6 +1144,12 @@ if ($Script:Config.HardeningEngine_Enabled) {
                 $isSuppressed = $suppressedAdminPatterns | Where-Object { $a.Name -match $_ }
                 if (-not $isSuppressed) {
                     Log-Warn "  $($a.Name)  -  REVIEW: should this account be an admin?"
+                    if ($a.Name -match '\\Domain Users$') {
+                        # Every domain user is a local admin - worst case
+                        Add-Finding -Severity High -Title "'$($a.Name)' is in local Administrators (ALL domain users have admin)" -Action 'Remove Domain Users from Administrators; grant admin per-user only where required'
+                    } else {
+                        Add-Finding -Severity Medium -Title "Local admin: $($a.Name)" -Action 'Confirm this account requires admin rights; remove if not'
+                    }
                 }
             }
         } else { Log-Summary "Local admins  -  $($admins.Count) account(s) (OK)" }
@@ -1418,6 +1468,7 @@ if ($Script:Config.PersistenceEngine_Enabled) {
             $isLegit = $legitimateExclPaths | Where-Object { $path -like "$_*" }
             if (-not $isLegit) {
                 Log-Warn "Suspicious Defender exclusion path: $path"
+                Add-Finding -Severity High -Title "Suspicious Defender exclusion: $path" -Action 'Verify legitimacy; remove via Remove-MpPreference -ExclusionPath if not intentional'
                 $suspectExclusions.Add($path)
             } else {
                 Log-Info "  [EXCL] $path (legitimate)"
@@ -1685,6 +1736,11 @@ if ($Script:Config.FilesystemEngine_Enabled) {
             }
         }
         if ($staleProfiles.Count -eq 0) { Log-Summary "Filesystem Engine  -  no stale profiles found" }
+        else {
+            $staleTotalGB = [math]::Round(($staleProfiles | Measure-Object -Property SizeGB -Sum).Sum, 1)
+            $staleTop = ($staleProfiles | Sort-Object SizeGB -Descending | Select-Object -First 3 | ForEach-Object { "$($_.Name) $($_.SizeGB)GB" }) -join ', '
+            Add-Finding -Severity Low -Title "$($staleProfiles.Count) stale profile(s) using $staleTotalGB GB (top: $staleTop)" -Action 'Confirm users are gone, then remove profiles via System Properties or Delprof2'
+        }
 
         # Redirected folder scan
         if ($Script:Config.ScanRedirectedFolders) {
@@ -1748,6 +1804,8 @@ if ($Script:Config.FilesystemEngine_Enabled) {
                 }
                 if ($largeFiles.Count -gt 0) {
                     Log-Warn "Large files (>$($Script:Config.LargeFileThresholdGB) GB) found  -  $($largeFiles.Count) file(s):"
+                    $lfTotalGB = [math]::Round((($largeFiles | Measure-Object -Property Length -Sum).Sum) / 1GB, 1)
+                    Add-Finding -Severity Low -Title "$($largeFiles.Count) file(s) over $($Script:Config.LargeFileThresholdGB) GB ($lfTotalGB GB total)" -Action 'Review list in log; archive oversized OSTs, delete leftover installers/images'
                     if ($largeFiles.Count -gt 50) { Log-Warn "  (showing largest 50 of $($largeFiles.Count))" }
                     foreach ($f in $largeFiles | Sort-Object Length -Descending | Select-Object -First 50) {
                         $sizeGB = [math]::Round($f.Length / 1GB, 2)
@@ -2158,6 +2216,8 @@ if ($Script:Config.ReportingEngine_Enabled) {
         if ($pending -gt 0) {
             $critCount = @($results.Updates | Where-Object { $_.MsrcSeverity -eq 'Critical' }).Count
             Log-Warn "Windows Update: $pending update(s) pending ($critCount critical)"
+            $wuSev = if ($critCount -gt 0) { 'Medium' } else { 'Low' }
+            Add-Finding -Severity $wuSev -Title "Windows Update: $pending pending ($critCount critical)" -Action 'Approve/deploy via Datto RMM update policy'
             foreach ($update in $results.Updates) {
                 $sev = if ($update.MsrcSeverity) { "[$($update.MsrcSeverity)]" } else { '[None]' }
                 Log-Info "  $sev $($update.Title)"
@@ -2470,6 +2530,7 @@ if ($Script:Config.ReportingEngine_Enabled) {
         # 1.1.1 Password minimum length
         if ($Script:MinPasswordLen -lt 8) {
             Log-Warn "  [CIS 1.1.1] Password minimum length is $Script:MinPasswordLen  -  recommend 8+ (Level 1)"
+            Add-Finding -Severity High -Title "Password minimum length is $Script:MinPasswordLen (CIS 1.1.1)" -Action 'Set MinimumPasswordLength >= 8 via domain GPO (local secedit is overridden on domain members)'
             $cisIssues++
         } else { Log-Info "  [CIS 1.1.1] Password minimum length: $Script:MinPasswordLen (OK)" }
 
@@ -2612,7 +2673,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.06.24.001 - Report"
+Log-Info "  ShellKnight v2026.06.24.002 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2625,7 +2686,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.06.24.001 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.06.24.002 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -2689,6 +2750,37 @@ Log-Info "  SECURITY GRADE:     $secGrade  ($Script:SecurityScore/100)"
 Log-Info "  PERFORMANCE GRADE:  $perfGrade  ($Script:PerformanceScore/100)"
 Log-Info ''
 
+# ------------------------------------------------------------------------------
+# REAL ISSUES WORTH ACTING ON - prioritized findings ledger (log + screen)
+# ------------------------------------------------------------------------------
+if ($Script:Findings.Count -gt 0) {
+    $sevOrder = @{ High = 0; Medium = 1; Low = 2 }
+    $sevColor = @{ High = 'Red'; Medium = 'Yellow'; Low = 'White' }
+    $sorted   = $Script:Findings | Sort-Object { $sevOrder[$_.Severity] }
+    $hi  = @($Script:Findings | Where-Object Severity -eq 'High').Count
+    $med = @($Script:Findings | Where-Object Severity -eq 'Medium').Count
+    $low = @($Script:Findings | Where-Object Severity -eq 'Low').Count
+
+    $fHeader = "  REAL ISSUES WORTH ACTING ON  -  $hi High / $med Medium / $low Low"
+    Log-Info '  ============================================================================'
+    Log-Info $fHeader
+    Log-Info '  ============================================================================'
+    Write-Host ''
+    Write-Host '  ============================================================================' -ForegroundColor Cyan
+    Write-Host $fHeader -ForegroundColor Cyan
+    Write-Host '  ============================================================================' -ForegroundColor Cyan
+    foreach ($f in $sorted) {
+        $line1 = "  [$($f.Severity.ToUpper().PadRight(6))] $($f.Title)"
+        $line2 = "           -> $($f.Action)"
+        Log-Info $line1
+        Log-Info $line2
+        Write-Host $line1 -ForegroundColor $sevColor[$f.Severity]
+        Write-Host $line2 -ForegroundColor DarkGray
+    }
+    Log-Info '  ============================================================================'
+    Write-Host '  ============================================================================' -ForegroundColor Cyan
+}
+
 # Screen summary
 Write-Host ''
 Write-Host "  ============================================================================" -ForegroundColor Cyan
@@ -2719,7 +2811,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.06.24.001'
+    version          = 'v2026.06.24.002'
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime
@@ -2750,10 +2842,12 @@ $jsonData = [ordered]@{
     hash_iocs_loaded = $Script:HashIOCsLoaded
     filename_iocs    = $Script:FilenameIOCsLoaded
     c2_iocs          = $Script:C2IOCsLoaded
+    failed_actions   = $Script:Counters.Failed
+    findings         = @($Script:Findings | ForEach-Object { [ordered]@{ severity = $_.Severity; title = $_.Title; action = $_.Action } })
     log_path         = $Script:LogPath
 }
 
-$jsonData | ConvertTo-Json | Set-Content -LiteralPath $jsonPath -Encoding UTF8 -Force
+$jsonData | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $jsonPath -Encoding UTF8 -Force
 Log-Info "JSON report saved: $jsonPath"
 
 # Exit code
