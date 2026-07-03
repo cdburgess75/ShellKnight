@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.07.03.012  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.07.03.013  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.07.03.012
+    Version    : v2026.07.03.013
     Released   : 2026-07-03
-    Prior      : v2026.07.03.011
+    Prior      : v2026.07.03.012
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,13 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.07.03.013 - EDR detection + more device fields exported. New EDR
+             agent detection by service name (SentinelOne, CrowdStrike,
+             Huntress, Defender for Endpoint, Cylance, Carbon Black,
+             Bitdefender, ESET, Sophos, Webroot, Malwarebytes, Arctic Wolf,
+             Datto EDR) as a distinct 'edr' field. JSON now also exports
+             defender_sigs, last_wu_install, domain (all already in
+             MachineInfo). Feeds the Battlefield detail panel.
     v2026.07.03.012 - Reboot control for Battlefield: SK_SCHEDULE_REBOOT_AT
              (ISO datetime -> reboot at that time, seconds computed at run)
              and SK_ABORT_REBOOT=1 (shutdown /a to cancel a pending reboot
@@ -237,7 +244,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.07.03.012 CONFIGURATION
+# SHELLKNIGHT v2026.07.03.013 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -388,7 +395,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.07.03.012'
+    Version                  = 'v2026.07.03.013'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -753,7 +760,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.07.03.012'
+$version     = 'ShellKnight v2026.07.03.013'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -889,6 +896,7 @@ $bitlockerWarn      = $false
 $osEolWarn          = $false
 $wuLastWarn         = $false
 $avProduct          = 'NONE DETECTED'
+$edrProduct         = 'None detected'
 $defStatus          = 'Unknown'
 $inactiveAccounts   = (New-Object 'System.Collections.Generic.List[object]')
 $Script:MinPasswordLen = 0
@@ -972,18 +980,46 @@ if ($Script:Config.AssessmentEngine_Enabled) {
             }
         } catch { }
 
-        # Datto AV / RMM / EDR detection
-        $dattoServices = @{
-            'EndpointProtectionService2' = 'Datto AV'
-            'CagService'                 = 'Datto RMM'
-            'HUNTAgent'                  = 'Datto EDR / Huntress'
+        # Datto AV (registered AV product; RMM handled elsewhere)
+        if (Get-Service -Name 'EndpointProtectionService2' -ErrorAction SilentlyContinue) {
+            $avProducts.Add('Datto AV')
         }
-        foreach ($svcName in $dattoServices.Keys) {
-            $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
-            if ($svc) { $avProducts.Add($dattoServices[$svcName]) }
-        }
-
         if ($avProducts.Count -gt 0) { $avProduct = $avProducts -join ', ' }
+
+        # EDR / managed-security agent detection by service name. SecurityCenter2
+        # only reports registered AV, so EDR-only tools (SentinelOne, CrowdStrike,
+        # Huntress, Defender for Endpoint, etc.) would otherwise be invisible.
+        $edrServices = @{
+            'SentinelAgent'              = 'SentinelOne'
+            'SentinelStaticEngine'       = 'SentinelOne'
+            'CSFalconService'            = 'CrowdStrike Falcon'
+            'CSAgent'                    = 'CrowdStrike Falcon'
+            'HuntressAgent'              = 'Huntress'
+            'HuntressRio'               = 'Huntress'
+            'HUNTAgent'                  = 'Datto EDR (Infocyte)'
+            'Sense'                      = 'MS Defender for Endpoint'
+            'CylanceSvc'                 = 'Cylance'
+            'CarbonBlack'                = 'Carbon Black'
+            'CbDefense'                  = 'Carbon Black Defense'
+            'EPSecurityService'          = 'Bitdefender'
+            'EPProtectedService'         = 'Bitdefender'
+            'MBAMService'                = 'Malwarebytes'
+            'WRSVC'                      = 'Webroot'
+            'ekrn'                       = 'ESET'
+            'EraAgentSvc'                = 'ESET PROTECT agent'
+            'SophosMCSAgent'             = 'Sophos'
+            'Sophos MCS Agent'          = 'Sophos'
+            'HMPAlertService'            = 'Sophos HitmanPro'
+            'ArcticWolfAgent'            = 'Arctic Wolf'
+        }
+        $edrFound = (New-Object 'System.Collections.Generic.List[string]')
+        foreach ($svcName in $edrServices.Keys) {
+            if (Get-Service -Name $svcName -ErrorAction SilentlyContinue) {
+                $label = $edrServices[$svcName]
+                if (-not $edrFound.Contains($label)) { $edrFound.Add($label) }
+            }
+        }
+        $edrProduct = if ($edrFound.Count -gt 0) { ($edrFound | Sort-Object -Unique) -join ', ' } else { 'None detected' }
 
         # Defender status
         try {
@@ -1028,6 +1064,7 @@ if ($Script:Config.AssessmentEngine_Enabled) {
             'C: Drive'        = "$diskFreeGB GB free of $diskTotalGB GB ($diskUsedPct% used)"
             'BitLocker'       = $blStatus
             'Antivirus'       = $avProduct
+            'EDR'             = $edrProduct
             'Defender'        = $defStatus
             'Defender Sigs'   = $defSigs
             'Last WU Install' = $wuStr
@@ -2814,7 +2851,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.07.03.012 - Report"
+Log-Info "  ShellKnight v2026.07.03.013 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2827,7 +2864,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.07.03.012 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.07.03.013 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -2952,7 +2989,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.07.03.012'
+    version          = 'v2026.07.03.013'
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime
@@ -2970,7 +3007,11 @@ $jsonData = [ordered]@{
     disk_free_after  = $freeAfterGB
     bitlocker        = $Script:MachineInfo['BitLocker']
     antivirus        = $avProduct
+    edr              = $edrProduct
     defender         = $defStatus
+    defender_sigs    = $Script:MachineInfo['Defender Sigs']
+    last_wu_install  = $Script:MachineInfo['Last WU Install']
+    domain           = $Script:MachineInfo['Domain/Workgroup']
     security_score   = $Script:SecurityScore
     security_grade   = $secGrade
     performance_score= $Script:PerformanceScore
