@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.07.03.011  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.07.03.012  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.07.03.011
+    Version    : v2026.07.03.012
     Released   : 2026-07-03
-    Prior      : v2026.07.03.010
+    Prior      : v2026.07.03.011
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,10 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.07.03.012 - Reboot control for Battlefield: SK_SCHEDULE_REBOOT_AT
+             (ISO datetime -> reboot at that time, seconds computed at run)
+             and SK_ABORT_REBOOT=1 (shutdown /a to cancel a pending reboot
+             if it hasn't fired). SK_SCHEDULE_REBOOT (minutes) retained.
     v2026.07.03.011 - On-demand remediation via env vars (Battlefield actions).
              SK_DISABLE_NETBIOS=1 -> disables NetBIOS this run (Compliance
              "Fix NetBIOS" button). SK_SCHEDULE_REBOOT=<minutes> -> schedules
@@ -233,7 +237,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.07.03.011 CONFIGURATION
+# SHELLKNIGHT v2026.07.03.012 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -384,7 +388,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.07.03.011'
+    Version                  = 'v2026.07.03.012'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -749,7 +753,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.07.03.011'
+$version     = 'ShellKnight v2026.07.03.012'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -2810,7 +2814,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.07.03.011 - Report"
+Log-Info "  ShellKnight v2026.07.03.012 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2823,7 +2827,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.07.03.011 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.07.03.012 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -2948,7 +2952,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.07.03.011'
+    version          = 'v2026.07.03.012'
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime
@@ -3011,9 +3015,29 @@ if ($Script:Config.BattlefieldEnabled) {
     }
 }
 
-# On-demand scheduled reboot (Battlefield "Schedule Reboot" action).
-# SK_SCHEDULE_REBOOT = minutes until reboot; scheduled after the run completes.
-if ($env:SK_SCHEDULE_REBOOT) {
+# On-demand reboot control (Battlefield Compliance actions).
+#   SK_ABORT_REBOOT=1        -> cancel a pending reboot (shutdown /a)
+#   SK_SCHEDULE_REBOOT_AT=<ISO local datetime> -> reboot at that time
+#   SK_SCHEDULE_REBOOT=<minutes>               -> reboot in N minutes (fallback)
+if ($env:SK_ABORT_REBOOT -in @('1','true','True','yes')) {
+    try {
+        & shutdown.exe /a 2>$null
+        Log-Info "Pending reboot cancelled via Battlefield request"
+    } catch { Log-Warn "Reboot cancel failed: $($_.Exception.Message)" }
+}
+elseif ($env:SK_SCHEDULE_REBOOT_AT) {
+    $target = [datetime]::MinValue
+    if ([datetime]::TryParse($env:SK_SCHEDULE_REBOOT_AT, [ref]$target)) {
+        $secs = [int]([math]::Round(($target - (Get-Date)).TotalSeconds))
+        if ($secs -lt 0) { $secs = 0 }                     # time already passed -> reboot now
+        if ($secs -gt 315360000) { $secs = 315360000 }     # shutdown.exe max (~10y)
+        try {
+            & shutdown.exe /r /t $secs /c "ShellKnight scheduled reboot (Battlefield)" 2>$null
+            Log-Info "Reboot scheduled for $($target.ToString('yyyy-MM-dd HH:mm')) (in $secs s)"
+        } catch { Log-Warn "Scheduled reboot failed: $($_.Exception.Message)" }
+    } else { Log-Warn "SK_SCHEDULE_REBOOT_AT unparseable: $($env:SK_SCHEDULE_REBOOT_AT)" }
+}
+elseif ($env:SK_SCHEDULE_REBOOT) {
     $mins = 0; [void][int]::TryParse($env:SK_SCHEDULE_REBOOT, [ref]$mins)
     if ($mins -lt 1) { $mins = 5 }
     try {
