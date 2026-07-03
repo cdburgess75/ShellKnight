@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.07.03.010  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.07.03.011  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.07.03.010
+    Version    : v2026.07.03.011
     Released   : 2026-07-03
-    Prior      : v2026.07.03.009
+    Prior      : v2026.07.03.010
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,12 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.07.03.011 - On-demand remediation via env vars (Battlefield actions).
+             SK_DISABLE_NETBIOS=1 -> disables NetBIOS this run (Compliance
+             "Fix NetBIOS" button). SK_SCHEDULE_REBOOT=<minutes> -> schedules
+             a reboot after the run ("Schedule Reboot" button). Both passed
+             as Datto quickjob variables, so the dashboard triggers targeted
+             fixes with no code change per box.
     v2026.07.03.010 - JSON export adds device fields for the Battlefield
              expandable row: logged_in_user, last_reboot, uptime,
              architecture (all already in MachineInfo, just weren't
@@ -227,7 +233,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.07.03.010 CONFIGURATION
+# SHELLKNIGHT v2026.07.03.011 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -355,6 +361,11 @@ if ($env:SK_BATTLEFIELD_ENABLED -in @('1','true','True','yes')) { $SK_Battlefiel
 if ($env:SK_BATTLEFIELD_URL)    { $SK_Battlefield_URL    = $env:SK_BATTLEFIELD_URL }
 if ($env:SK_BATTLEFIELD_APIKEY) { $SK_Battlefield_ApiKey = $env:SK_BATTLEFIELD_APIKEY }
 
+# On-demand remediation from Battlefield (job variables passed by the Datto quickjob).
+# These let the dashboard trigger a targeted fix on the next run without a code change.
+if ($env:SK_DISABLE_NETBIOS -in @('1','true','True','yes')) { $SK_DisableNetBIOS = $true }
+# SK_SCHEDULE_REBOOT = minutes until reboot (handled at end of run)
+
 
 # ==============================================================================
 # STRICT MODE & RUNTIME INITIALIZATION
@@ -373,7 +384,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.07.03.010'
+    Version                  = 'v2026.07.03.011'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -738,7 +749,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.07.03.010'
+$version     = 'ShellKnight v2026.07.03.011'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -2799,7 +2810,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.07.03.010 - Report"
+Log-Info "  ShellKnight v2026.07.03.011 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2812,7 +2823,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.07.03.010 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.07.03.011 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -2937,7 +2948,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.07.03.010'
+    version          = 'v2026.07.03.011'
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime
@@ -2998,6 +3009,17 @@ if ($Script:Config.BattlefieldEnabled) {
             Log-Warn "Battlefield push failed  -  $($_.Exception.Message)"
         }
     }
+}
+
+# On-demand scheduled reboot (Battlefield "Schedule Reboot" action).
+# SK_SCHEDULE_REBOOT = minutes until reboot; scheduled after the run completes.
+if ($env:SK_SCHEDULE_REBOOT) {
+    $mins = 0; [void][int]::TryParse($env:SK_SCHEDULE_REBOOT, [ref]$mins)
+    if ($mins -lt 1) { $mins = 5 }
+    try {
+        & shutdown.exe /r /t ($mins * 60) /c "ShellKnight scheduled reboot (Battlefield)" 2>$null
+        Log-Info "Scheduled reboot in $mins minute(s) via Battlefield request"
+    } catch { Log-Warn "Scheduled reboot failed: $($_.Exception.Message)" }
 }
 
 # Exit code
