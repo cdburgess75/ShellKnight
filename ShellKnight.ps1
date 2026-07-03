@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.07.03.005  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.07.03.006  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.07.03.005
+    Version    : v2026.07.03.006
     Released   : 2026-07-03
-    Prior      : v2026.07.03.004
+    Prior      : v2026.07.03.005
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,18 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.07.03.006 - Field batch from PCH-DT-CJP2ZC3 test run.
+             BUG FIX: Get-ProfileScan sizes came back ~0 GB - AllDirectories
+             enumeration throws on the first access-denied directory (every
+             profile has denied junctions) and aborted the walk, also
+             blinding the large-file finder. Replaced with a stack-based
+             walker that skips denied dirs and reparse points but keeps
+             walking.
+             Defender ACTIVE detections now register as High findings in
+             the REAL ISSUES table (an active trojan was WARN-only while
+             benign 7045 events ranked High).
+             Event 7045 whitelist: googleupdater path (Chrome updater
+             re-registers its services on every Chrome update).
     v2026.07.03.005 - TLS 1.2 enforcement for all outbound web calls (review
              finding 6b). Field hit: Datto download one-liner failed with
              "Could not create SSL/TLS secure channel" on an older box -
@@ -194,7 +206,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.07.03.005 CONFIGURATION
+# SHELLKNIGHT v2026.07.03.006 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -321,7 +333,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.07.03.005'
+    Version                  = 'v2026.07.03.006'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -608,18 +620,35 @@ function Get-ProfileScan {
     foreach ($profileDir in [System.IO.Directory]::EnumerateDirectories($Root)) {
         $profileName = [System.IO.Path]::GetFileName($profileDir)
         $total = 0L
-        try {
-            foreach ($file in [System.IO.Directory]::EnumerateFiles($profileDir, '*', [System.IO.SearchOption]::AllDirectories)) {
-                try { $len = (New-Object System.IO.FileInfo $file).Length } catch { continue }
-                $total += $len
-                if ($len -gt $LargeThresholdBytes) {
-                    $ext = [System.IO.Path]::GetExtension($file).ToLower()
-                    if (-not $ExcludeExts.Contains($ext)) {
-                        $large.Add([PSCustomObject]@{ FullName = $file; Length = $len; Extension = $ext })
+        # Manual stack-based walk. AllDirectories enumeration THROWS on the
+        # first access-denied directory and aborts the remaining walk - and
+        # every profile contains denied junctions (Application Data etc.), so
+        # sizes came back ~0 in the field (PCH-DT-CJP2ZC3 2026-07-03). This
+        # walker skips denied dirs and reparse points but keeps walking.
+        $dirStack = New-Object 'System.Collections.Generic.Stack[string]'
+        $dirStack.Push($profileDir)
+        while ($dirStack.Count -gt 0) {
+            $dir = $dirStack.Pop()
+            try {
+                foreach ($sub in [System.IO.Directory]::EnumerateDirectories($dir)) {
+                    try {
+                        $attr = [System.IO.File]::GetAttributes($sub)
+                        if ($attr -band [System.IO.FileAttributes]::ReparsePoint) { continue }  # skip junctions - loops/double-count
+                    } catch { continue }
+                    $dirStack.Push($sub)
+                }
+                foreach ($file in [System.IO.Directory]::EnumerateFiles($dir)) {
+                    try { $len = (New-Object System.IO.FileInfo $file).Length } catch { continue }
+                    $total += $len
+                    if ($len -gt $LargeThresholdBytes) {
+                        $ext = [System.IO.Path]::GetExtension($file).ToLower()
+                        if (-not $ExcludeExts.Contains($ext)) {
+                            $large.Add([PSCustomObject]@{ FullName = $file; Length = $len; Extension = $ext })
+                        }
                     }
                 }
-            }
-        } catch { }
+            } catch { }  # denied dir: skip it, continue with the rest of the stack
+        }
         $sizes[$profileName] = $total
     }
     [PSCustomObject]@{ Sizes = $sizes; Large = $large }
@@ -666,7 +695,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.07.03.005'
+$version     = 'ShellKnight v2026.07.03.006'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -2332,7 +2361,8 @@ if ($Script:Config.ReportingEngine_Enabled) {
             'centrastage',               # Datto RMM install tree incl. bundled UltraVNC (uvnc_service) - field FP 2026-06-24
             'hitmanpro',                 # Sophos HitmanPro driver - field FP 2026-06-24
             'silver bullet technology',  # SBT check-scanning suite (SBTKernel, Ranger) - field FP 2026-06-02 RAS1
-            'paniniusb'                  # Panini check scanner USB driver - field FP 2026-06-02 RAS1
+            'paniniusb',                 # Panini check scanner USB driver - field FP 2026-06-02 RAS1
+            'googleupdater'              # Chrome updater re-registers services on every Chrome update - field FP 2026-07-03 PCH-DT
         ) + @($Script:Config.Svc7045_ExtraPaths | Where-Object { $_ })
 
         $svcGroups = @{}
@@ -2434,6 +2464,10 @@ if ($Script:Config.ReportingEngine_Enabled) {
                 Log-Warn "Defender threat history  -  $($activeThreats.Count) active detection(s) in last 30 days:"
                 foreach ($t in $activeThreats | Sort-Object { $_.Date } -Descending | Select-Object -First 10) {
                     Log-Warn "  $($t.Date.ToString('yyyy-MM-dd'))  $($t.Name)  -  $($t.Resources)"
+                    # Active malware detections belong at the top of the findings table
+                    # (field gap 2026-07-03: an active trojan was WARN-only while benign
+                    # 7045 events ranked High)
+                    Add-Finding -Severity High -Title "Defender active detection ($($t.Date.ToString('yyyy-MM-dd'))): $($t.Name) - $($t.Resources)" -Action 'Verify Defender remediated it; investigate how it arrived (user download? email?); consider full scan'
                 }
             }
             if ($historicalThreats.Count -gt 0) {
@@ -2720,7 +2754,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.07.03.005 - Report"
+Log-Info "  ShellKnight v2026.07.03.006 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2733,7 +2767,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.07.03.005 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.07.03.006 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -2858,7 +2892,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.07.03.005'
+    version          = 'v2026.07.03.006'
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime
