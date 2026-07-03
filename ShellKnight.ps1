@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.07.03.008  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.07.03.009  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.07.03.008
+    Version    : v2026.07.03.009
     Released   : 2026-07-03
-    Prior      : v2026.07.03.007
+    Prior      : v2026.07.03.008
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,10 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.07.03.009 - Event 7045 whitelist: ESET PROTECT agent updater path
+             (eset\RemoteAdministrator) - field FP across St. Michael site
+             2026-07-03, first FP caught via Battlefield ingest. Pattern is
+             regex-escaped (\\) since the path list is matched with -match.
     v2026.07.03.008 - Battlefield config via environment variables. The Datto
              component can now enable the push and supply the tenant API key
              through SK_BATTLEFIELD_ENABLED / SK_BATTLEFIELD_APIKEY / _URL
@@ -219,7 +223,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.07.03.008 CONFIGURATION
+# SHELLKNIGHT v2026.07.03.009 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -365,7 +369,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.07.03.008'
+    Version                  = 'v2026.07.03.009'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -730,7 +734,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.07.03.008'
+$version     = 'ShellKnight v2026.07.03.009'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -2397,7 +2401,9 @@ if ($Script:Config.ReportingEngine_Enabled) {
             'hitmanpro',                 # Sophos HitmanPro driver - field FP 2026-06-24
             'silver bullet technology',  # SBT check-scanning suite (SBTKernel, Ranger) - field FP 2026-06-02 RAS1
             'paniniusb',                 # Panini check scanner USB driver - field FP 2026-06-02 RAS1
-            'googleupdater'              # Chrome updater re-registers services on every Chrome update - field FP 2026-07-03 PCH-DT
+            'googleupdater',             # Chrome updater re-registers services on every Chrome update - field FP 2026-07-03 PCH-DT
+            'eset\\remoteadministrator'  # ESET PROTECT agent updater re-registers its service - field FP 2026-07-03 St. Michael (regex: \\ = literal backslash)
+
         ) + @($Script:Config.Svc7045_ExtraPaths | Where-Object { $_ })
 
         $svcGroups = @{}
@@ -2789,7 +2795,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.07.03.008 - Report"
+Log-Info "  ShellKnight v2026.07.03.009 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2802,7 +2808,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.07.03.008 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.07.03.009 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -2927,7 +2933,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.07.03.008'
+    version          = 'v2026.07.03.009'
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime
