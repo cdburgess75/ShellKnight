@@ -7,9 +7,10 @@ name: Validate ShellKnight
 
 on:
   push:
-    paths: ['**.ps1']
+    paths: ['**.ps1', '.github/workflows/validate.yml']
   pull_request:
-    paths: ['**.ps1']
+    paths: ['**.ps1', '.github/workflows/validate.yml']
+  workflow_dispatch:
 
 jobs:
   validate:
