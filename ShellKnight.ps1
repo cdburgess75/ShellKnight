@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.06.24.002  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.06.24.003  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.06.24.002
+    Version    : v2026.06.24.003
     Released   : 2026-06-24
-    Prior      : v2026.06.24.001
+    Prior      : v2026.06.24.002
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,19 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.06.24.003 - Honesty batch: fixed or removed features that claimed to
+             work but did not (code review findings 1c/1d/1h/1i/5e).
+             C2 check now REAL: DNS client cache checked against the C2
+             domain feed (old check compared remote IPs to domain names -
+             could never match).
+             Logged-in User now reports the console user via CIM/quser
+             (was hardcoded to the machine account string).
+             CVE check stub REMOVED (queried MSRC, logged success, parsed
+             nothing since v1.001).
+             MalwareBazaar renamed to Hash IOC scan - it never called the
+             MB API; ApiKey config removed, SK_HashIOCScan_Enabled added.
+             Email/syslog config REMOVED - no implementation existed
+             behind the options; alerting arrives with Battlefield.
     v2026.06.24.002 - REAL ISSUES WORTH ACTING ON report section.
              New findings ledger (Add-Finding) collects prioritized High/
              Medium/Low issues during the run; report prints them grouped
@@ -159,7 +172,6 @@
     v0.68 - ShellKnight rename, A-F grading, JSON output.
 
 .LINK
-    MalwareBazaar API    : https://bazaar.abuse.ch/api/
     Neo23x0 Signature DB : https://github.com/Neo23x0/signature-base
     GitHub               : https://github.com/cdburgess75/ShellKnight
 #>
@@ -169,7 +181,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.06.24.002 CONFIGURATION
+# SHELLKNIGHT v2026.06.24.003 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -191,7 +203,6 @@ $SK_IntelEngine_CacheAgeDays     = 7        # Force refresh cache after this man
 # Queries Microsoft Security Update Guide for CVEs applicable to this Windows build.
 # Severity levels: Critical, High, Medium reported. KB references included.
 $SK_AssessmentEngine_Enabled     = $true    # Enable/disable Assessment Engine
-$SK_AssessmentEngine_CVECheck    = $true    # Check Microsoft Security Update Guide for CVEs
 $SK_AssessmentEngine_MinSeverity = 'Medium' # Minimum severity to report (Critical/High/Medium)
 
 # --- HARDENING ENGINE (Phase 3) ---
@@ -244,12 +255,14 @@ $SK_MinFreeSpaceGB               = 2.0      # Warn if free space is below this (
 
 # --- DETECTION ENGINE (Phase 7) ---
 # Comprehensive threat detection. Scans for trojan and malware IOCs, detects
-# riskware and exploit tools, performs MalwareBazaar SHA256 hash lookups,
-# checks for ransomware canary patterns, inspects hosts file for C2 domains,
-# audits network connections, and inventories all remote access tools.
+# riskware and exploit tools, performs SHA256 hash-IOC scans against the
+# intel feed, checks for ransomware canary patterns, inspects hosts file and
+# DNS cache for C2 domains, audits network connections, and inventories all
+# remote access tools.
 $SK_DetectionEngine_Enabled      = $true    # Enable/disable Detection Engine
-$SK_MalwareBazaar_Enabled        = $true    # Enable MalwareBazaar hash lookups
-$SK_MalwareBazaar_ApiKey         = ''       # MalwareBazaar API key (leave empty for anonymous)
+$SK_HashIOCScan_Enabled          = $true    # SHA256-hash files in IOC scan paths against the local intel hash list
+                                            # (renamed from MalwareBazaar_Enabled - it never called the MB API,
+                                            # it checks against the Neo23x0 hash feed loaded by the Intel Engine)
 $SK_RemoteAccessInventory        = $true    # Inventory all remote access tools found
 $SK_RemoteAccessWarnUnknown      = $true    # WARN on remote tools not in Add/Remove Programs
 $SK_ScreenConnect_InstanceID     = '32f7367870097776' # Your managed ScreenConnect instance ID
@@ -272,25 +285,10 @@ $SK_AutoDisableThresholdDays     = 547      # Accounts inactive this many days =
 $SK_AutoDisableOnServers         = $false   # Allow auto-disable on servers (default: workstations only)
 $SK_AutoDisableExclusions        = @('Administrator','Guest','DefaultAccount','WDAGUtilityAccount')
 
-# --- EMAIL ALERTS ---
-# Configure SMTP settings to receive email alerts when IOCs are found.
-# Requires valid SMTP credentials. Disabled by default.
-$SK_Email_Enabled                = $false
-$SK_Email_Server                 = 'smtp.office365.com'
-$SK_Email_Port                   = 587
-$SK_Email_TLS                    = $true
-$SK_Email_From                   = 'alerts@yourdomain.com'
-$SK_Email_To                     = 'alerts@yourdomain.com'
-$SK_Email_User                   = 'alerts@yourdomain.com'
-$SK_Email_Pass                   = ''
-
-# --- SYSLOG ---
-# Configure syslog forwarding for SIEM integration.
-$SK_Syslog_Enabled               = $false
-$SK_Syslog_Server                = ''
-$SK_Syslog_Port                  = 514
-$SK_Syslog_Protocol              = 'UDP'
-$SK_Syslog_Facility              = 16
+# NOTE: Email and syslog alerting were removed in the v1.001 rewrite and the
+# config options had no implementation behind them (review finding 5e) - they
+# were deleted rather than left as silent no-ops. Centralized alerting arrives
+# with the Battlefield dashboard (JSON POST ingest, see docs/adr/0001).
 
 
 # ==============================================================================
@@ -302,7 +300,7 @@ $Script:RunStart = Get-Date
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.06.24.002'
+    Version                  = 'v2026.06.24.003'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -310,7 +308,6 @@ $Script:Config = [PSCustomObject]@{
     IntelEngine_CacheAgeDays = $SK_IntelEngine_CacheAgeDays
     # Assessment Engine
     AssessmentEngine_Enabled = $SK_AssessmentEngine_Enabled
-    CVECheck                 = $SK_AssessmentEngine_CVECheck
     MinSeverity              = $SK_AssessmentEngine_MinSeverity
     # Hardening Engine
     HardeningEngine_Enabled  = $SK_HardeningEngine_Enabled
@@ -344,8 +341,7 @@ $Script:Config = [PSCustomObject]@{
     MinFreeSpaceGB           = $SK_MinFreeSpaceGB
     # Detection Engine
     DetectionEngine_Enabled  = $SK_DetectionEngine_Enabled
-    MBEnabled                = $SK_MalwareBazaar_Enabled
-    MBApiKey                 = $SK_MalwareBazaar_ApiKey
+    HashScanEnabled          = $SK_HashIOCScan_Enabled
     RemoteAccessInventory    = $SK_RemoteAccessInventory
     RemoteAccessWarnUnknown  = $SK_RemoteAccessWarnUnknown
     SCInstanceID             = $SK_ScreenConnect_InstanceID
@@ -360,20 +356,7 @@ $Script:Config = [PSCustomObject]@{
     AutoDisableOnServers     = $SK_AutoDisableOnServers
     AutoDisableExclusions    = $SK_AutoDisableExclusions
     # Email
-    EmailEnabled             = $SK_Email_Enabled
-    EmailServer              = $SK_Email_Server
-    EmailPort                = $SK_Email_Port
-    EmailTLS                 = $SK_Email_TLS
-    EmailFrom                = $SK_Email_From
-    EmailTo                  = $SK_Email_To
-    EmailUser                = $SK_Email_User
-    EmailPass                = $SK_Email_Pass
     # Syslog
-    SyslogEnabled            = $SK_Syslog_Enabled
-    SyslogServer             = $SK_Syslog_Server
-    SyslogPort               = $SK_Syslog_Port
-    SyslogProtocol           = $SK_Syslog_Protocol
-    SyslogFacility           = $SK_Syslog_Facility
 }
 
 # ==============================================================================
@@ -662,7 +645,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.06.24.002'
+$version     = 'ShellKnight v2026.06.24.003'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -819,7 +802,11 @@ if ($Script:Config.AssessmentEngine_Enabled) {
         $uptime    = (Get-Date) - $lastBoot
         $uptimeStr = "$([math]::Floor($uptime.TotalDays))d $($uptime.Hours)h $($uptime.Minutes)m"
         $domain    = if ($cs.PartOfDomain) { "Domain: $($cs.Domain)" } else { "Workgroup: $($cs.Workgroup)" }
-        $loggedIn  = "$env:COMPUTERNAME$"
+        # Console user via CIM; running as SYSTEM, $env:USERNAME would be the machine account
+        $loggedIn  = if ($cs.UserName) { $cs.UserName } else {
+            $quserLine = (& quser 2>$null | Select-Object -Skip 1 | Select-Object -First 1)
+            if ($quserLine) { ($quserLine.Trim() -split '\s+')[0].TrimStart('>') } else { '(none)' }
+        }
 
         # Server detection
         $Script:HWInfo.IsServer = $osName -match 'Server'
@@ -971,19 +958,6 @@ if ($Script:Config.AssessmentEngine_Enabled) {
                 $Script:MachineInfo['Hyper-V Host'] = "Yes  -  $($vms.Count) VM(s): $vmList"
                 $Script:HWInfo.IsHyperVHost = $true
                 Log-Summary "Hyper-V host  -  $($vms.Count) VM(s): $vmList"
-            }
-        }
-
-        # CVE Vulnerability check
-        if ($Script:Config.CVECheck) {
-            Invoke-SafeBlock -Label 'CVE check' -Block {
-                $msrcUrl = "https://api.msrc.microsoft.com/cvrf/v2.0/Updates('$((Get-Date).Year)')"
-                $resp = Invoke-WebRequest -Uri $msrcUrl -TimeoutSec 15 -ErrorAction Stop
-                if ($resp.StatusCode -eq 200) {
-                    Log-Summary "CVE check  -  Microsoft Security Update Guide queried for build $osBuild"
-                    # Parse and report Critical/High/Medium CVEs
-                    # Full implementation in v1.001 field build
-                }
             }
         }
 
@@ -1842,7 +1816,7 @@ if ($Script:Config.FilesystemEngine_Enabled) {
 
 # ==============================================================================
 # PHASE 7: DETECTION ENGINE
-# IOC detection, MalwareBazaar, ransomware canary, hosts file, network, remote access
+# IOC detection, hash-IOC scan, ransomware canary, hosts file, DNS cache, network, remote access
 # ==============================================================================
 Write-PhaseProgress -PhaseNum 7 -PhaseName 'Detection Engine'
 Log-Info '--- Phase 7: Detection Engine ---'
@@ -1913,9 +1887,9 @@ if ($Script:Config.DetectionEngine_Enabled) {
     }
     if ($rwHits -eq 0) { Log-Summary "Detection Engine  -  no riskware detected" }
 
-    # MalwareBazaar hash lookup
-    if ($Script:Config.MBEnabled) {
-        Invoke-SafeBlock -Label 'MalwareBazaar' -Block {
+    # Hash IOC scan - SHA256 files in IOC scan paths against the local intel hash list
+    if ($Script:Config.HashScanEnabled) {
+        Invoke-SafeBlock -Label 'Hash IOC scan' -Block {
             $mbHits = 0
             $hashFiles = (New-Object 'System.Collections.Generic.List[object]')
             foreach ($scanPath in $iocScanPaths) {
@@ -1930,13 +1904,13 @@ if ($Script:Config.DetectionEngine_Enabled) {
                 try {
                     $hash = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256 -ErrorAction Stop).Hash.ToLower()
                     if ($Script:HashIOCs.Contains($hash)) {
-                        Log-IOC "MalwareBazaar hash match: $($f.Name)  -  SHA256: $hash"
+                        Log-IOC "Hash IOC match: $($f.Name)  -  SHA256: $hash"
                         $Script:Counters.IOCsFound++
                         $mbHits++
                     }
                 } catch { }
             }
-            if ($mbHits -eq 0) { Log-Summary "Detection Engine  -  MalwareBazaar: $($hashFiles.Count) files checked, 0 hits" }
+            if ($mbHits -eq 0) { Log-Summary "Detection Engine  -  Hash IOC scan: $($hashFiles.Count) files checked, 0 hits" }
         }
     }
 
@@ -2017,19 +1991,22 @@ if ($Script:Config.DetectionEngine_Enabled) {
         }
         if ($suspectFound -eq 0) { Log-Summary "Detection Engine  -  no suspicious listeners found ($($listeners.Count) ports checked)" }
 
-        # Active outbound connections check
-        $activeConns = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue)
+        # C2 domain check via DNS client cache.
+        # The C2 intel feed contains DOMAINS; comparing them to remote IPs from
+        # Get-NetTCPConnection could never match (review finding 1d). The DNS
+        # cache shows what this machine recently RESOLVED - an honest signal
+        # that something on the box reached out to a C2 domain.
         $c2Hits = 0
-        foreach ($conn in $activeConns) {
-            $remoteIP = $conn.RemoteAddress
-            if ($Script:C2IOCs.Contains($remoteIP)) {
-                $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
-                Log-IOC "Active C2 connection: $remoteIP (PID: $($conn.OwningProcess) - $($proc.Name))"
+        $dnsEntries = @(Get-DnsClientCache -ErrorAction SilentlyContinue)
+        foreach ($entry in $dnsEntries) {
+            $dnsName = $entry.Entry
+            if ($dnsName -and $Script:C2IOCs.Contains($dnsName.TrimEnd('.'))) {
+                Log-IOC "C2 domain in DNS cache: $dnsName  -  resolved to: $($entry.Data)"
                 $Script:Counters.IOCsFound++
                 $c2Hits++
             }
         }
-        if ($c2Hits -eq 0) { Log-Summary "Detection Engine  -  no C2 connections detected ($($activeConns.Count) active connections checked)" }
+        if ($c2Hits -eq 0) { Log-Summary "Detection Engine  -  no C2 domains in DNS cache ($($dnsEntries.Count) entries checked)" }
     }
 
     # Remote access tool inventory with RISKWARE-RAT classification
@@ -2673,7 +2650,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.06.24.002 - Report"
+Log-Info "  ShellKnight v2026.06.24.003 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2686,7 +2663,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.06.24.002 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.06.24.003 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -2811,7 +2788,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.06.24.002'
+    version          = 'v2026.06.24.003'
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime
