@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.06.16.001  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.06.24.001  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.06.16.001
-    Released   : 2026-06-16
-    Prior      : v1.05
+    Version    : v2026.06.24.001
+    Released   : 2026-06-24
+    Prior      : v2026.06.16.001
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,18 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.06.24.001 - Field FP batch + SC removal safety (RAS1 2026-06-02,
+             HOPECENTER 2026-06-24 runs).
+             Event 7045 whitelist: CentraStage svc/path (Datto RMM + bundled
+             UltraVNC), HitmanPro, Silver Bullet Technology, PaniniUSB.
+             New config: SK_Svc7045_ExtraNames / SK_Svc7045_ExtraPaths for
+             per-deployment whitelist additions without editing engine code.
+             SC auto-removal now DEFAULT OFF (detect+report only) after it
+             half-deleted our own managed instance on HOPECENTER; managed
+             instance ID 32f7367870097776 now shipped in config.
+             SC delete path guard: >=3 segments deep + leaf must contain
+             'screenconnect' before any Remove-Item -Recurse fires.
+             Failed counter now displays actual count (was 'Yes'/'1').
     v2026.06.16.001 - Version scheme migration to date-based versioning.
              Phase 6 perf: C:\Users now walked ONCE (single-pass Get-ProfileScan
              via .NET enumerator) instead of twice — feeds both stale-profile
@@ -147,7 +159,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.06.16.001 CONFIGURATION
+# SHELLKNIGHT v2026.06.24.001 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -230,8 +242,13 @@ $SK_MalwareBazaar_Enabled        = $true    # Enable MalwareBazaar hash lookups
 $SK_MalwareBazaar_ApiKey         = ''       # MalwareBazaar API key (leave empty for anonymous)
 $SK_RemoteAccessInventory        = $true    # Inventory all remote access tools found
 $SK_RemoteAccessWarnUnknown      = $true    # WARN on remote tools not in Add/Remove Programs
-$SK_ScreenConnect_InstanceID     = ''       # Your managed ScreenConnect instance ID
-$SK_RemoveRogueScreenConnect     = $true    # Auto-remove non-managed ScreenConnect instances
+$SK_ScreenConnect_InstanceID     = '32f7367870097776' # Your managed ScreenConnect instance ID
+$SK_RemoveRogueScreenConnect     = $false   # Auto-remove non-managed ScreenConnect instances
+                                            # DEFAULT OFF: detect + report only. Field incident
+                                            # 2026-06-24 (HOPECENTER): auto-removal fired on our
+                                            # own SC instance and half-deleted it (locked DLL).
+$SK_Svc7045_ExtraNames           = @()      # Per-deployment additions to the Event 7045 service-name whitelist
+$SK_Svc7045_ExtraPaths           = @()      # Per-deployment additions to the Event 7045 service-path whitelist (substring match)
 $SK_ScanDepth                    = 'Standard' # Standard, Deep, Compliance
 
 # --- REPORTING ENGINE (Phase 8) ---
@@ -275,7 +292,7 @@ $Script:RunStart = Get-Date
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.06.16.001'
+    Version                  = 'v2026.06.24.001'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -323,6 +340,8 @@ $Script:Config = [PSCustomObject]@{
     RemoteAccessWarnUnknown  = $SK_RemoteAccessWarnUnknown
     SCInstanceID             = $SK_ScreenConnect_InstanceID
     SCRemoveRogue            = $SK_RemoveRogueScreenConnect
+    Svc7045_ExtraNames       = $SK_Svc7045_ExtraNames
+    Svc7045_ExtraPaths       = $SK_Svc7045_ExtraPaths
     ScanDepth                = $SK_ScanDepth
     # Reporting Engine
     ReportingEngine_Enabled  = $SK_ReportingEngine_Enabled
@@ -607,7 +626,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.06.16.001'
+$version     = 'ShellKnight v2026.06.24.001'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -2189,13 +2208,25 @@ if ($Script:Config.ReportingEngine_Enabled) {
             # Intel driver update service
             'IntelTACD',
             # Trusteer Rapport banking security (high-frequency reinstall by design)
-            'RapportIaso'
+            'RapportIaso',
+            # Datto RMM agent service (reinstalls on agent updates) - field FP 2026-06-24
+            'CentraStage',
+            # Sophos HitmanPro support driver - field FP 2026-06-24
+            'HitmanPro 3.7 Support Driver'
         ) | ForEach-Object { $null = $knownGoodSvcs.Add($_) }
+        # Per-deployment additions from config
+        foreach ($extra in @($Script:Config.Svc7045_ExtraNames)) {
+            if ($extra) { $null = $knownGoodSvcs.Add($extra) }
+        }
 
         # Path-based whitelist for known-good vendor paths (catches name variations)
         $knownGoodSvcPaths = @(
-            'infocyte'   # Datto EDR / Infocyte agent path
-        )
+            'infocyte',                  # Datto EDR / Infocyte agent path
+            'centrastage',               # Datto RMM install tree incl. bundled UltraVNC (uvnc_service) - field FP 2026-06-24
+            'hitmanpro',                 # Sophos HitmanPro driver - field FP 2026-06-24
+            'silver bullet technology',  # SBT check-scanning suite (SBTKernel, Ranger) - field FP 2026-06-02 RAS1
+            'paniniusb'                  # Panini check scanner USB driver - field FP 2026-06-02 RAS1
+        ) + @($Script:Config.Svc7045_ExtraPaths | Where-Object { $_ })
 
         $svcGroups = @{}
         foreach ($evt in $svcEvents) {
@@ -2234,10 +2265,17 @@ if ($Script:Config.ReportingEngine_Enabled) {
                             $exePath   = ($g['SvcPath'] -split '"')[1]
                             if (-not $exePath) { $exePath = $g['SvcPath'].Trim('"').Split(' ')[0] }
                             $exeFolder = Split-Path $exePath -Parent
-                            if ($exeFolder -and (Test-Path -LiteralPath $exeFolder)) {
+                            # Safety guard: only delete a folder that (a) is at least 3 path
+                            # segments deep and (b) has 'screenconnect' in its leaf name.
+                            # Prevents a malformed event path from parsing to C:\ or C:\Windows.
+                            $segCount = @($exeFolder -split '\\' | Where-Object { $_ }).Count
+                            $leafOk   = (Split-Path $exeFolder -Leaf) -match 'screenconnect'
+                            if ($exeFolder -and $segCount -ge 3 -and $leafOk -and (Test-Path -LiteralPath $exeFolder)) {
                                 Remove-Item -LiteralPath $exeFolder -Recurse -Force -ErrorAction Stop
                                 Log-Success "Removed rogue SC via Event 7045: $exeFolder"
                                 $Script:RogueScreenConnectRemoved = $true
+                            } elseif ($exeFolder) {
+                                Log-Warn "SC removal skipped  -  path failed safety guard: $exeFolder"
                             }
                         } catch { Log-Fail "SC removal failed: $($_.Exception.Message)" }
                     }
@@ -2574,7 +2612,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.06.16.001 - Report"
+Log-Info "  ShellKnight v2026.06.24.001 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2587,7 +2625,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.06.16.001 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.06.24.001 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -2601,7 +2639,7 @@ Write-Host "  ==================================================================
 Write-Host "  Disk Free   : $freeGB GB  ->  $freeAfterGB GB  (+$([math]::Round($freeAfterGB - $freeGB,1)) GB net)" -ForegroundColor White
 Write-Host "  IOC Alerts  : $($Script:Counters.IOCsFound)" -ForegroundColor $(if ($Script:Counters.IOCsFound -gt 0) { 'Red' } else { 'Green' })
 Write-Host "  Actions Done: $($Script:Counters.ActionsTaken)" -ForegroundColor White
-Write-Host "  Failed      : $(if ($Script:Counters.Failed) { 'Yes' } else { '0' })" -ForegroundColor $(if ($Script:Counters.Failed) { 'Red' } else { 'White' })
+Write-Host "  Failed      : $($Script:Counters.Failed)" -ForegroundColor $(if ($Script:Counters.Failed) { 'Red' } else { 'White' })
 Write-Host "  ============================================================================" -ForegroundColor Cyan
 
 # Executive Summary (log)
@@ -2614,7 +2652,7 @@ Log-Info "  ------                                  -----"
 Log-Info "  Disk Free    : $freeGB GB                Disk Free    : $freeAfterGB GB  (+$([math]::Round($freeAfterGB - $freeGB,1)) GB net / $freedGBGross GB gross freed)"
 Log-Info "  IOC Alerts   : $($Script:Counters.IOCsFound)"
 Log-Info "  Warnings     :                           Actions Done : $($Script:Counters.ActionsTaken)"
-Log-Info "  Failed       : $(if ($Script:Counters.Failed) { 'Yes' } else { '0' })"
+Log-Info "  Failed       : $($Script:Counters.Failed)"
 Log-Info '  ============================================================================'
 
 # Metrics
@@ -2632,7 +2670,7 @@ Log-Info "  Filename IOCs loaded     $($Script:FilenameIOCsLoaded)"
 Log-Info "  C2 IOCs loaded           $($Script:C2IOCsLoaded)"
 Log-Info "  Intel source             $($Script:Counters.IntelSource)"
 Log-Info "  Total actions taken      $($Script:Counters.ActionsTaken)"
-Log-Info "  Failed actions           $(if ($Script:Counters.Failed) { '1' } else { '0' })"
+Log-Info "  Failed actions           $($Script:Counters.Failed)"
 Log-Info "  IOC alerts               $($Script:Counters.IOCsFound)"
 Log-Info "  Runtime                  $runtime seconds"
 Log-Info "  PS Version               $Script:PSFullVer"
@@ -2681,7 +2719,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.06.16.001'
+    version          = 'v2026.06.24.001'
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime
