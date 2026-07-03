@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.07.03.007  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.07.03.008  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.07.03.007
+    Version    : v2026.07.03.008
     Released   : 2026-07-03
-    Prior      : v2026.07.03.006
+    Prior      : v2026.07.03.007
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,12 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.07.03.008 - Battlefield config via environment variables. The Datto
+             component can now enable the push and supply the tenant API key
+             through SK_BATTLEFIELD_ENABLED / SK_BATTLEFIELD_APIKEY / _URL
+             env vars, so the key never lives in this public repo and no
+             per-box script editing is needed. Env wins over the in-script
+             defaults when present.
     v2026.07.03.007 - Battlefield push (ADR 0001/0002). At end of run the
              report JSON is POSTed to the Battlefield ingest endpoint with
              an X-API-Key tenant header. Gated OFF by default
@@ -213,7 +219,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.07.03.007 CONFIGURATION
+# SHELLKNIGHT v2026.07.03.008 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -324,12 +330,22 @@ $SK_AutoDisableExclusions        = @('Administrator','Guest','DefaultAccount','W
 
 # --- BATTLEFIELD DASHBOARD (JSON push) ---
 # POST the run report JSON to the Battlefield ingest endpoint at end of run
-# (ADR 0001/0002). Gated OFF by default - enable per-deployment (e.g. set the
-# variables in the Datto RMM component) once the HTTPS endpoint is confirmed
-# reachable. API key identifies the tenant; keep it out of the public repo.
+# (ADR 0001/0002). Gated OFF by default - enable per-deployment once the HTTPS
+# endpoint is confirmed reachable.
+#
+# Each setting falls back to an environment variable, so the Datto RMM component
+# can enable the push WITHOUT editing this (public) script and WITHOUT the tenant
+# API key ever living in the repo. In the component, set:
+#   SK_BATTLEFIELD_ENABLED=1   SK_BATTLEFIELD_APIKEY=<tenant key>
+# (SK_BATTLEFIELD_URL optional - defaults below.)
 $SK_Battlefield_Enabled          = $false
 $SK_Battlefield_URL              = 'https://battlefield.ptechllc.com/api/v1/runs'
 $SK_Battlefield_ApiKey           = ''
+
+# Environment-variable overrides (component/Datto sets these; env wins when present)
+if ($env:SK_BATTLEFIELD_ENABLED -in @('1','true','True','yes')) { $SK_Battlefield_Enabled = $true }
+if ($env:SK_BATTLEFIELD_URL)    { $SK_Battlefield_URL    = $env:SK_BATTLEFIELD_URL }
+if ($env:SK_BATTLEFIELD_APIKEY) { $SK_Battlefield_ApiKey = $env:SK_BATTLEFIELD_APIKEY }
 
 
 # ==============================================================================
@@ -349,7 +365,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.07.03.007'
+    Version                  = 'v2026.07.03.008'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -714,7 +730,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.07.03.007'
+$version     = 'ShellKnight v2026.07.03.008'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -2773,7 +2789,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.07.03.007 - Report"
+Log-Info "  ShellKnight v2026.07.03.008 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2786,7 +2802,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.07.03.007 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.07.03.008 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -2911,7 +2927,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.07.03.007'
+    version          = 'v2026.07.03.008'
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime
