@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.07.03.004  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.07.03.005  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.07.03.004
+    Version    : v2026.07.03.005
     Released   : 2026-07-03
-    Prior      : v2026.07.03.003
+    Prior      : v2026.07.03.004
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,12 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.07.03.005 - TLS 1.2 enforcement for all outbound web calls (review
+             finding 6b). Field hit: Datto download one-liner failed with
+             "Could not create SSL/TLS secure channel" on an older box -
+             the same failure would silently degrade Intel Engine feeds
+             to the hardcoded fallback list. OR'd into existing protocols
+             so TLS 1.3 remains available where the OS supports it.
     v2026.07.03.004 - Per-user persistence coverage (review findings 3a/3b).
              Run/RunOnce keys now scanned for every loaded user hive under
              HKEY_USERS (S-1-5-21-* SIDs; SYSTEM-context HKCU only ever saw
@@ -188,7 +194,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.07.03.004 CONFIGURATION
+# SHELLKNIGHT v2026.07.03.005 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -305,9 +311,17 @@ Set-StrictMode -Version 2
 $ErrorActionPreference = 'SilentlyContinue'
 $Script:RunStart = Get-Date
 
+# Force TLS 1.2+ for all outbound web calls (Intel Engine feeds, future
+# Battlefield POST). Older Windows/PS defaults to TLS 1.0, which GitHub and
+# most modern endpoints reject - without this, intel downloads silently fall
+# back to the hardcoded IOC list (review finding 6b; field hit 2026-07-03).
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch { }
+
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.07.03.004'
+    Version                  = 'v2026.07.03.005'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -652,7 +666,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.07.03.004'
+$version     = 'ShellKnight v2026.07.03.005'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -2706,7 +2720,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.07.03.004 - Report"
+Log-Info "  ShellKnight v2026.07.03.005 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2719,7 +2733,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.07.03.004 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.07.03.005 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -2844,7 +2858,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.07.03.004'
+    version          = 'v2026.07.03.005'
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime
