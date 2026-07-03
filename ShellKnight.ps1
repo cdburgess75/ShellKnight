@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.07.03.006  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.07.03.007  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.07.03.006
+    Version    : v2026.07.03.007
     Released   : 2026-07-03
-    Prior      : v2026.07.03.005
+    Prior      : v2026.07.03.006
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,13 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.07.03.007 - Battlefield push (ADR 0001/0002). At end of run the
+             report JSON is POSTed to the Battlefield ingest endpoint with
+             an X-API-Key tenant header. Gated OFF by default
+             (SK_Battlefield_Enabled) - enable per-deployment via the Datto
+             component once the HTTPS endpoint is confirmed reachable. Push
+             failure is logged as WARN and never affects the run/exit code;
+             the on-disk JSON remains the source of truth.
     v2026.07.03.006 - Field batch from PCH-DT-CJP2ZC3 test run.
              BUG FIX: Get-ProfileScan sizes came back ~0 GB - AllDirectories
              enumeration throws on the first access-denied directory (every
@@ -206,7 +213,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.07.03.006 CONFIGURATION
+# SHELLKNIGHT v2026.07.03.007 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -315,6 +322,15 @@ $SK_AutoDisableExclusions        = @('Administrator','Guest','DefaultAccount','W
 # were deleted rather than left as silent no-ops. Centralized alerting arrives
 # with the Battlefield dashboard (JSON POST ingest, see docs/adr/0001).
 
+# --- BATTLEFIELD DASHBOARD (JSON push) ---
+# POST the run report JSON to the Battlefield ingest endpoint at end of run
+# (ADR 0001/0002). Gated OFF by default - enable per-deployment (e.g. set the
+# variables in the Datto RMM component) once the HTTPS endpoint is confirmed
+# reachable. API key identifies the tenant; keep it out of the public repo.
+$SK_Battlefield_Enabled          = $false
+$SK_Battlefield_URL              = 'https://battlefield.ptechllc.com/api/v1/runs'
+$SK_Battlefield_ApiKey           = ''
+
 
 # ==============================================================================
 # STRICT MODE & RUNTIME INITIALIZATION
@@ -333,7 +349,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.07.03.006'
+    Version                  = 'v2026.07.03.007'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -375,6 +391,9 @@ $Script:Config = [PSCustomObject]@{
     # Detection Engine
     DetectionEngine_Enabled  = $SK_DetectionEngine_Enabled
     HashScanEnabled          = $SK_HashIOCScan_Enabled
+    BattlefieldEnabled       = $SK_Battlefield_Enabled
+    BattlefieldURL           = $SK_Battlefield_URL
+    BattlefieldApiKey        = $SK_Battlefield_ApiKey
     RemoteAccessInventory    = $SK_RemoteAccessInventory
     RemoteAccessWarnUnknown  = $SK_RemoteAccessWarnUnknown
     SCInstanceID             = $SK_ScreenConnect_InstanceID
@@ -695,7 +714,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.07.03.006'
+$version     = 'ShellKnight v2026.07.03.007'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -2754,7 +2773,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.07.03.006 - Report"
+Log-Info "  ShellKnight v2026.07.03.007 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2767,7 +2786,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.07.03.006 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.07.03.007 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -2892,7 +2911,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.07.03.006'
+    version          = 'v2026.07.03.007'
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime
@@ -2928,8 +2947,28 @@ $jsonData = [ordered]@{
     log_path         = $Script:LogPath
 }
 
-$jsonData | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $jsonPath -Encoding UTF8 -Force
+$jsonBody = $jsonData | ConvertTo-Json -Depth 4
+$jsonBody | Set-Content -LiteralPath $jsonPath -Encoding UTF8 -Force
 Log-Info "JSON report saved: $jsonPath"
+
+# Battlefield push (ADR 0001/0002) - POST the same JSON to the ingest endpoint.
+# Failure here never affects the run outcome; the on-disk report is the source
+# of truth and a later run will re-report current state.
+if ($Script:Config.BattlefieldEnabled) {
+    if (-not $Script:Config.BattlefieldApiKey) {
+        Log-Warn "Battlefield enabled but no API key set  -  skipping push"
+    } else {
+        try {
+            $headers = @{ 'X-API-Key' = $Script:Config.BattlefieldApiKey }
+            $resp = Invoke-RestMethod -Uri $Script:Config.BattlefieldURL -Method Post `
+                        -Body $jsonBody -ContentType 'application/json' `
+                        -Headers $headers -TimeoutSec 20 -ErrorAction Stop
+            Log-Success "Battlefield push OK  -  run_id: $($resp.run_id) | tenant: $($resp.tenant)"
+        } catch {
+            Log-Warn "Battlefield push failed  -  $($_.Exception.Message)"
+        }
+    }
+}
 
 # Exit code
 $exitCode = if ($Script:Counters.IOCsFound -gt 0) { 2 } elseif ($Script:Counters.Failed) { 1 } else { 0 }
