@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.07.03.013  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.07.03.014  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.07.03.013
+    Version    : v2026.07.03.014
     Released   : 2026-07-03
-    Prior      : v2026.07.03.012
+    Prior      : v2026.07.03.013
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,11 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.07.03.014 - Stable device_id export for Battlefield device identity.
+             Hardware UUID (Win32_ComputerSystemProduct) preferred, falls
+             back to registry MachineGuid, then host:<name>. Lets the
+             dashboard track a machine across hostname changes and site
+             moves independent of which API key reported it.
     v2026.07.03.013 - EDR detection + more device fields exported. New EDR
              agent detection by service name (SentinelOne, CrowdStrike,
              Huntress, Defender for Endpoint, Cylance, Carbon Black,
@@ -244,7 +249,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.07.03.013 CONFIGURATION
+# SHELLKNIGHT v2026.07.03.014 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -395,7 +400,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.07.03.013'
+    Version                  = 'v2026.07.03.014'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -760,7 +765,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.07.03.013'
+$version     = 'ShellKnight v2026.07.03.014'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -1049,8 +1054,22 @@ if ($Script:Config.AssessmentEngine_Enabled) {
             -ErrorAction SilentlyContinue |
             Select-Object DisplayName, DisplayVersion, Publisher, InstallDate, InstallLocation, UninstallString)
 
+        # Stable device identity - independent of hostname/site so Battlefield
+        # can track a machine across renames and site moves. Prefer the hardware
+        # UUID (survives OS reinstall); fall back to MachineGuid, then hostname.
+        $deviceId = $null
+        try {
+            $hwUuid = (Get-CimInstance Win32_ComputerSystemProduct -ErrorAction Stop).UUID
+            if ($hwUuid -and $hwUuid -notmatch '^(0{8}-0{4}-0{4}-0{4}-0{12}|FFFFFFFF)' ) { $deviceId = $hwUuid.Trim() }
+        } catch { }
+        if (-not $deviceId) {
+            try { $deviceId = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid -ErrorAction Stop).MachineGuid } catch { }
+        }
+        if (-not $deviceId) { $deviceId = "host:$($env:COMPUTERNAME)" }
+
         # Build machine info
         $Script:MachineInfo = [ordered]@{
+            'Device ID'       = $deviceId
             'Hostname'        = $env:COMPUTERNAME
             'OS'              = "$osName (Build $osBuild)"
             'OS EOL'          = $eolStr
@@ -2851,7 +2870,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.07.03.013 - Report"
+Log-Info "  ShellKnight v2026.07.03.014 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2864,7 +2883,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.07.03.013 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.07.03.014 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -2989,7 +3008,8 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.07.03.013'
+    version          = 'v2026.07.03.014'
+    device_id        = $Script:MachineInfo['Device ID']
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime
