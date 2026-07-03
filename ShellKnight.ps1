@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.07.03.003  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.07.03.004  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.07.03.003
+    Version    : v2026.07.03.004
     Released   : 2026-07-03
-    Prior      : v2026.07.03.002
+    Prior      : v2026.07.03.003
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,13 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.07.03.004 - Per-user persistence coverage (review findings 3a/3b).
+             Run/RunOnce keys now scanned for every loaded user hive under
+             HKEY_USERS (S-1-5-21-* SIDs; SYSTEM-context HKCU only ever saw
+             SYSTEM's own hive). SID resolved to username for logging.
+             Startup folder scan now enumerates every profile under
+             C:\Users (filesystem - covers logged-off users too), not just
+             SYSTEM's AppData + ProgramData.
     v2026.07.03.003 - Honesty batch: fixed or removed features that claimed to
              work but did not (code review findings 1c/1d/1h/1i/5e).
              C2 check now REAL: DNS client cache checked against the C2
@@ -181,7 +188,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.07.03.003 CONFIGURATION
+# SHELLKNIGHT v2026.07.03.004 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -300,7 +307,7 @@ $Script:RunStart = Get-Date
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.07.03.003'
+    Version                  = 'v2026.07.03.004'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -645,7 +652,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.07.03.003'
+$version     = 'ShellKnight v2026.07.03.004'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -1363,11 +1370,60 @@ if ($Script:Config.PersistenceEngine_Enabled) {
     }
     if ($runKeysRemoved -eq 0) { Log-Summary "Persistence Engine  -  no malware Run keys found" }
 
-    # Startup folder LNK cleanup
+    # Per-user Run / RunOnce keys via HKEY_USERS.
+    # Running as SYSTEM, HKCU above is SYSTEM's own hive - real users' Run keys
+    # live under HKU\<SID> and were previously never scanned (review finding 3a).
+    # Covers hives currently loaded (logged-on users + recently active); offline
+    # hives would require reg load of each NTUSER.DAT and are intentionally skipped.
+    Invoke-SafeBlock -Label 'Per-user Run keys (HKU)' -Block {
+        if (-not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) {
+            $null = New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS -Scope Script
+        }
+        # S-1-5-21-* = real local/domain accounts; skip service SIDs and _Classes hives
+        $userSids = @(Get-ChildItem 'HKU:\' -ErrorAction Stop |
+                      Where-Object { $_.PSChildName -match '^S-1-5-21-' -and $_.PSChildName -notmatch '_Classes$' })
+        $hkuScanned = 0
+        foreach ($sidKey in $userSids) {
+            $sid = $sidKey.PSChildName
+            # Resolve SID to username for readable logging; fall back to raw SID
+            $who = try { (New-Object System.Security.Principal.SecurityIdentifier($sid)).Translate([System.Security.Principal.NTAccount]).Value } catch { $sid }
+            foreach ($sub in @('SOFTWARE\Microsoft\Windows\CurrentVersion\Run','SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce')) {
+                $keyPath = "HKU:\$sid\$sub"
+                if (-not (Test-Path $keyPath)) { continue }
+                $hkuScanned++
+                $props = Get-ItemProperty $keyPath -ErrorAction SilentlyContinue
+                if (-not $props) { continue }
+                $props.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' } | ForEach-Object {
+                    $name = $_.Name
+                    $val  = $_.Value
+                    $isMalware = $malwareRunPatterns | Where-Object { $name -match $_ -or $val -match $_ }
+                    $inIOC     = $Script:FilenameIOCs | Where-Object { $val -match [regex]::Escape($_) }
+                    if ($isMalware -or $inIOC) {
+                        Log-IOC "Malware Run key (user: $who): $name = $val"
+                        Remove-ItemProperty -Path $keyPath -Name $name -Force -ErrorAction SilentlyContinue
+                        Log-Success "Removed per-user Run key: $name ($who)"
+                        $Script:Counters.RunKeysRemoved++
+                        $Script:Counters.IOCsFound++
+                    } else {
+                        Log-Info "  [RUN:$who] $name = $val"
+                    }
+                }
+            }
+        }
+        Log-Summary "Persistence Engine  -  per-user Run keys: $($userSids.Count) loaded hive(s) scanned (offline hives not loaded)"
+    }
+
+    # Startup folder LNK cleanup.
+    # $env:APPDATA under SYSTEM is SYSTEM's own profile - per-user Startup
+    # folders are enumerated from C:\Users so ALL profiles are covered,
+    # including users who are not logged on (review finding 3b).
     $startupFolders = @(
         "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup",
         'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup'
     )
+    $startupFolders += @(Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue |
+                         Where-Object { $_.Name -notmatch '^(Public|Default|All Users)$' } |
+                         ForEach-Object { Join-Path $_.FullName 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup' })
     $lnksRemoved = 0
     foreach ($folder in $startupFolders) {
         if (-not (Test-Path $folder)) { continue }
@@ -2650,7 +2706,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.07.03.003 - Report"
+Log-Info "  ShellKnight v2026.07.03.004 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2663,7 +2719,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.07.03.003 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.07.03.004 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -2788,7 +2844,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.07.03.003'
+    version          = 'v2026.07.03.004'
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime
