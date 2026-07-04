@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.07.03.014  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.07.03.015  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.07.03.014
+    Version    : v2026.07.03.015
     Released   : 2026-07-03
-    Prior      : v2026.07.03.013
+    Prior      : v2026.07.03.014
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,14 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.07.03.015 - Agentless self-operation (ADR 0007/0008). ShellKnight
+             now: persists settings to C:\ProgramData\ShellKnight\config.json
+             and self-maintains a Windows Scheduled Task (every 8h + per-device
+             jitter, runs as SYSTEM) so it keeps running with no agent and no
+             RMM after a one-time bootstrap. Pulls queued commands from the
+             Battlefield report-POST response and executes them (NetBIOS,
+             reboot, cancel) - remediation without Datto. Reports hardware
+             type (chassis) so the dashboard needs no Datto lookup.
     v2026.07.03.014 - Stable device_id export for Battlefield device identity.
              Hardware UUID (Win32_ComputerSystemProduct) preferred, falls
              back to registry MachineGuid, then host:<name>. Lets the
@@ -249,7 +257,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.07.03.014 CONFIGURATION
+# SHELLKNIGHT v2026.07.03.015 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -372,15 +380,35 @@ $SK_Battlefield_Enabled          = $false
 $SK_Battlefield_URL              = 'https://battlefield.ptechllc.com/api/v1/runs'
 $SK_Battlefield_ApiKey           = ''
 
-# Environment-variable overrides (component/Datto sets these; env wins when present)
+# --- SELF-SCHEDULING (ADR 0007) ---
+# ShellKnight keeps itself running via a native Windows Scheduled Task - no
+# agent, no RMM dependency. Settings persist to config.json so scheduled runs
+# (which have no Datto env vars) stay self-sufficient.
+$SK_SelfSchedule                 = $true     # Maintain the ShellKnight scheduled task
+$SK_ScheduleHours                = 8         # Cadence in hours (also bounds pull-queue latency, ADR 0008)
+$Script:ConfigPath               = 'C:\ProgramData\ShellKnight\config.json'
+
+# Load persisted config FIRST (scheduled runs rely on this); env overrides win after.
+if (Test-Path $Script:ConfigPath) {
+    try {
+        $cfg = Get-Content -LiteralPath $Script:ConfigPath -Raw | ConvertFrom-Json
+        if ($cfg.BattlefieldURL)    { $SK_Battlefield_URL    = $cfg.BattlefieldURL }
+        if ($cfg.BattlefieldApiKey) { $SK_Battlefield_ApiKey = $cfg.BattlefieldApiKey; $SK_Battlefield_Enabled = $true }
+        if ($cfg.ScheduleHours)     { $SK_ScheduleHours      = [int]$cfg.ScheduleHours }
+        if ($null -ne $cfg.SelfSchedule) { $SK_SelfSchedule  = [bool]$cfg.SelfSchedule }
+    } catch { }
+}
+
+# Environment-variable overrides (bootstrap via Datto sets these; env wins)
 if ($env:SK_BATTLEFIELD_ENABLED -in @('1','true','True','yes')) { $SK_Battlefield_Enabled = $true }
 if ($env:SK_BATTLEFIELD_URL)    { $SK_Battlefield_URL    = $env:SK_BATTLEFIELD_URL }
 if ($env:SK_BATTLEFIELD_APIKEY) { $SK_Battlefield_ApiKey = $env:SK_BATTLEFIELD_APIKEY }
+if ($env:SK_SCHEDULE_HOURS)     { $SK_ScheduleHours      = [int]$env:SK_SCHEDULE_HOURS }
 
-# On-demand remediation from Battlefield (job variables passed by the Datto quickjob).
-# These let the dashboard trigger a targeted fix on the next run without a code change.
+# On-demand remediation from Battlefield. Legacy path: Datto quickjob env vars.
+# Primary path (ADR 0008): commands pulled from the report-POST response at run end.
 if ($env:SK_DISABLE_NETBIOS -in @('1','true','True','yes')) { $SK_DisableNetBIOS = $true }
-# SK_SCHEDULE_REBOOT = minutes until reboot (handled at end of run)
+# SK_SCHEDULE_REBOOT / _AT and SK_ABORT_REBOOT handled at end of run
 
 
 # ==============================================================================
@@ -400,7 +428,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.07.03.014'
+    Version                  = 'v2026.07.03.015'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -765,7 +793,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.07.03.014'
+$version     = 'ShellKnight v2026.07.03.015'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -782,6 +810,45 @@ Write-Host "  $('-' * $bannerWidth)"
 Log-Info $line
 Log-Info "  $version  |  $hostname  |  $timestamp  |  $psver"
 Log-Info $line
+
+# ==============================================================================
+# SELF-MAINTENANCE: persist config + ensure scheduled task (ADR 0007)
+# ==============================================================================
+# Persist settings so scheduled runs (no Datto, no env) stay self-sufficient.
+if ($SK_Battlefield_ApiKey) {
+    try {
+        $cfgDir = Split-Path $Script:ConfigPath -Parent
+        if (-not (Test-Path $cfgDir)) { $null = New-Item -ItemType Directory -Path $cfgDir -Force }
+        [ordered]@{
+            BattlefieldURL    = $SK_Battlefield_URL
+            BattlefieldApiKey = $SK_Battlefield_ApiKey
+            ScheduleHours     = $SK_ScheduleHours
+            SelfSchedule      = $SK_SelfSchedule
+            UpdatedUtc        = (Get-Date).ToUniversalTime().ToString('o')
+        } | ConvertTo-Json | Set-Content -LiteralPath $Script:ConfigPath -Encoding UTF8 -Force
+    } catch { Log-Warn "Could not write config.json: $($_.Exception.Message)" }
+}
+
+# Ensure the self-perpetuating scheduled task exists (native OS, no agent).
+if ($SK_SelfSchedule -and $SK_Battlefield_ApiKey) {
+    try {
+        $launcher = Join-Path (Split-Path $Script:ConfigPath -Parent) 'run.ps1'
+        $launchBody = @'
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+$f = "$env:windir\Temp\ShellKnight.ps1"
+try { Invoke-RestMethod -Uri 'https://raw.githubusercontent.com/cdburgess75/ShellKnight/main/ShellKnight.ps1' -OutFile $f -TimeoutSec 60; & $f } catch { }
+'@
+        Set-Content -LiteralPath $launcher -Value $launchBody -Encoding UTF8 -Force
+
+        # Per-device jitter so the fleet doesn't check in simultaneously.
+        $seed = 0; foreach ($ch in $env:COMPUTERNAME.ToCharArray()) { $seed = ($seed * 31 + [int]$ch) % 480 }
+        $startTime = (Get-Date '00:00').AddMinutes($seed).ToString('HH:mm')
+        $action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$launcher`""
+        & schtasks.exe /Create /TN 'ShellKnight' /TR $action /SC HOURLY /MO $SK_ScheduleHours `
+            /ST $startTime /RU 'SYSTEM' /RL HIGHEST /F 2>$null | Out-Null
+        Log-Info "Self-schedule ensured: every $SK_ScheduleHours h at :$startTime (SYSTEM)"
+    } catch { Log-Warn "Self-schedule failed: $($_.Exception.Message)" }
+}
 
 # ==============================================================================
 # PHASE 1: INTEL ENGINE
@@ -1067,9 +1134,24 @@ if ($Script:Config.AssessmentEngine_Enabled) {
         }
         if (-not $deviceId) { $deviceId = "host:$($env:COMPUTERNAME)" }
 
+        # Hardware type from chassis (replaces the Datto lazy-fetch; ADR 0008)
+        $hwType = 'Unknown'
+        try {
+            $chassis = @((Get-CimInstance Win32_SystemEnclosure -ErrorAction Stop).ChassisTypes)
+            $c = if ($chassis.Count) { [int]$chassis[0] } else { 0 }
+            $hwType = if     ($c -in 8,9,10,11,12,14,18,21,30,31,32) { 'Laptop' }
+                      elseif ($c -in 3,4,5,6,7,15,16,35)             { 'Desktop' }
+                      elseif ($c -in 17,23,25,28)                    { 'Server' }
+                      elseif ($c -in 13)                             { 'All-in-One' }
+                      elseif ($c -in 34)                             { 'Embedded' }
+                      else { 'Other' }
+            if ($osName -match 'Server') { $hwType = 'Server' }
+        } catch { }
+
         # Build machine info
         $Script:MachineInfo = [ordered]@{
             'Device ID'       = $deviceId
+            'Hardware Type'   = $hwType
             'Hostname'        = $env:COMPUTERNAME
             'OS'              = "$osName (Build $osBuild)"
             'OS EOL'          = $eolStr
@@ -2870,7 +2952,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.07.03.014 - Report"
+Log-Info "  ShellKnight v2026.07.03.015 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2883,7 +2965,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.07.03.014 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.07.03.015 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -3008,8 +3090,9 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.07.03.014'
+    version          = 'v2026.07.03.015'
     device_id        = $Script:MachineInfo['Device ID']
+    hardware_type    = $Script:MachineInfo['Hardware Type']
     hostname         = $env:COMPUTERNAME
     run_date         = (Get-Date -Format 'o')
     runtime_seconds  = $runtime
@@ -3069,7 +3152,42 @@ if ($Script:Config.BattlefieldEnabled) {
             $resp = Invoke-RestMethod -Uri $Script:Config.BattlefieldURL -Method Post `
                         -Body $jsonBody -ContentType 'application/json' `
                         -Headers $headers -TimeoutSec 20 -ErrorAction Stop
-            Log-Success "Battlefield push OK  -  run_id: $($resp.run_id) | tenant: $($resp.tenant)"
+            Log-Success "Battlefield push OK  -  run_id: $($resp.run_id)"
+
+            # Pull-queue command channel (ADR 0008): the POST response carries any
+            # commands queued for this device from the dashboard. Execute them now.
+            if ($resp.PSObject.Properties['commands'] -and $resp.commands) {
+                foreach ($cmd in @($resp.commands)) {
+                    $action = "$($cmd.action)".ToLower()
+                    try {
+                        switch ($action) {
+                            'netbios' {
+                                $ifs = @(Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces' -ErrorAction SilentlyContinue)
+                                foreach ($if in $ifs) { Set-ItemProperty -Path $if.PSPath -Name NetbiosOptions -Value 2 -ErrorAction SilentlyContinue }
+                                Log-Success "Command applied: NetBIOS disabled on $($ifs.Count) interface(s)"
+                            }
+                            'reboot' {
+                                $atv = if ($cmd.PSObject.Properties['params'] -and $cmd.params) { "$($cmd.params.at)" } else { '' }
+                                $secs = 300
+                                if ($atv) {
+                                    $t = [datetime]::MinValue
+                                    if ([datetime]::TryParse($atv, [ref]$t)) { $secs = [int]([math]::Round(($t - (Get-Date)).TotalSeconds)) }
+                                }
+                                if ($secs -lt 0) { $secs = 0 }
+                                if ($secs -gt 315360000) { $secs = 315360000 }
+                                & shutdown.exe /r /t $secs /c "ShellKnight scheduled reboot (Battlefield)" 2>$null
+                                Log-Success "Command applied: reboot scheduled in $secs s"
+                            }
+                            'abort-reboot' {
+                                & shutdown.exe /a 2>$null
+                                Log-Success "Command applied: pending reboot cancelled"
+                            }
+                            'update' { Log-Info "Command: update (already running latest via scheduled task)" }
+                            default  { Log-Warn "Unknown queued command: $action" }
+                        }
+                    } catch { Log-Warn "Command '$action' failed: $($_.Exception.Message)" }
+                }
+            }
         } catch {
             Log-Warn "Battlefield push failed  -  $($_.Exception.Message)"
         }
