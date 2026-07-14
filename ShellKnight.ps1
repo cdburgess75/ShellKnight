@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.07.12.001  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.07.14.001  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,7 +18,7 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.07.12.001
+    Version    : v2026.07.14.001
     Released   : 2026-07-12
     Prior      : v2026.07.03.015
 
@@ -33,6 +33,13 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.07.14.001 - Two field fixes. (1) The Process Engine no longer flags or
+             removes ShellKnight's OWN self-scheduling task: its launcher runs
+             powershell -NoProfile -ExecutionPolicy Bypass, which tripped the
+             obfuscation heuristic and deleted our agentless persistence on the
+             first run. Now trusted by task name + launcher path. (2) Battlefield
+             push no longer mislabels a declined-but-acknowledged response (e.g.
+             frozen enrollment) as a failure; StrictMode-safe run_id/status probe.
     v2026.07.12.001 - Auto-enrollment support. Reports SK_SITE_NAME (optional
              company name) so Battlefield auto-creates/joins the company on
              first report; blank falls back to the AD domain. Persisted to
@@ -262,7 +269,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.07.12.001 CONFIGURATION
+# SHELLKNIGHT v2026.07.14.001 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -394,6 +401,9 @@ $SK_ScheduleHours                = 8         # Cadence in hours (also bounds pul
 $SK_SiteName                     = ''        # Optional company name for Battlefield auto-enrollment
                                              # (SK_SITE_NAME). Blank -> Battlefield falls back to AD domain.
 $Script:ConfigPath               = 'C:\ProgramData\ShellKnight\config.json'
+# ShellKnight's own self-scheduling launcher. Derived from ConfigPath so the IOC
+# engine can recognise (and never remove) our own persistence task.
+$Script:SelfLauncherPath         = Join-Path (Split-Path $Script:ConfigPath -Parent) 'run.ps1'
 
 # Load persisted config FIRST (scheduled runs rely on this); env overrides win after.
 if (Test-Path $Script:ConfigPath) {
@@ -437,7 +447,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.07.12.001'
+    Version                  = 'v2026.07.14.001'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -802,7 +812,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.07.12.001'
+$version     = 'ShellKnight v2026.07.14.001'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -842,7 +852,7 @@ if ($SK_Battlefield_ApiKey) {
 # Ensure the self-perpetuating scheduled task exists (native OS, no agent).
 if ($SK_SelfSchedule -and $SK_Battlefield_ApiKey) {
     try {
-        $launcher = Join-Path (Split-Path $Script:ConfigPath -Parent) 'run.ps1'
+        $launcher = $Script:SelfLauncherPath
         $launchBody = @'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $f = "$env:windir\Temp\ShellKnight.ps1"
@@ -1529,6 +1539,22 @@ if ($Script:Config.ProcessEngine_Enabled) {
         if ($isLegitSchedulerPath) {
             Log-Info "  [TASK][SYSTEM] $($task.TaskName) - Microsoft system task path, skipping"
             continue
+        }
+        # Never flag/remove ShellKnight's own self-scheduling task - it launches
+        # powershell with -NoProfile -ExecutionPolicy Bypass, which trips the
+        # obfuscation heuristic below. Require our task name AND our launcher path
+        # so a hostile task merely NAMED 'ShellKnight' is still inspected.
+        if ($task.TaskName -eq 'ShellKnight') {
+            $selfMatch = $false
+            foreach ($a in $task.Actions) {
+                if (-not $a.PSObject.Properties['Execute']) { continue }
+                $aArgs = if ($a.PSObject.Properties['Arguments']) { $a.Arguments } else { '' }
+                if ("$($a.Execute) $aArgs" -like "*$($Script:SelfLauncherPath)*") { $selfMatch = $true; break }
+            }
+            if ($selfMatch) {
+                Log-Info "  [TASK][SELF] ShellKnight self-schedule - trusted, skipping"
+                continue
+            }
         }
         foreach ($action in $task.Actions) {
             if (-not $action.PSObject.Properties['Execute']) { continue }
@@ -2962,7 +2988,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.07.12.001 - Report"
+Log-Info "  ShellKnight v2026.07.14.001 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -2975,7 +3001,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.07.12.001 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.07.14.001 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -3100,7 +3126,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.07.12.001'
+    version          = 'v2026.07.14.001'
     device_id        = $Script:MachineInfo['Device ID']
     hardware_type    = $Script:MachineInfo['Hardware Type']
     site_name        = $SK_SiteName
@@ -3163,7 +3189,17 @@ if ($Script:Config.BattlefieldEnabled) {
             $resp = Invoke-RestMethod -Uri $Script:Config.BattlefieldURL -Method Post `
                         -Body $jsonBody -ContentType 'application/json' `
                         -Headers $headers -TimeoutSec 20 -ErrorAction Stop
-            Log-Success "Battlefield push OK  -  run_id: $($resp.run_id)"
+            # The server may accept the run (returns run_id) or decline it (e.g.
+            # frozen enrollment returns {status:'ignored',reason:...}). Under
+            # Set-StrictMode -Version 2 a bare $resp.run_id throws when absent, so
+            # probe properties explicitly and report each case clearly.
+            if ($resp.PSObject.Properties['status'] -and "$($resp.status)" -eq 'ignored') {
+                $reason = if ($resp.PSObject.Properties['reason']) { $resp.reason } else { 'declined' }
+                Log-Warn "Battlefield accepted the POST but did not record this device  -  $reason"
+            } else {
+                $rid = if ($resp.PSObject.Properties['run_id']) { $resp.run_id } else { '(none)' }
+                Log-Success "Battlefield push OK  -  run_id: $rid"
+            }
 
             # Pull-queue command channel (ADR 0008): the POST response carries any
             # commands queued for this device from the dashboard. Execute them now.
