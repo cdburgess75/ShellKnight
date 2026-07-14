@@ -20,6 +20,9 @@
 # ==============================================================================
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+# Let the downloaded script run this session only (default policy is Restricted;
+# also clears the mark-of-the-web block). Does not persist, needs no admin.
+Set-ExecutionPolicy Bypass -Scope Process -Force
 
 $env:SK_BATTLEFIELD_ENABLED = "1"
 $env:SK_BATTLEFIELD_URL     = "https://battlefield.ptechllc.com/api/v1/runs"
