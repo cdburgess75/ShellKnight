@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.07.14.001  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.07.15.001  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,7 +18,7 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.07.14.001
+    Version    : v2026.07.15.001
     Released   : 2026-07-12
     Prior      : v2026.07.03.015
 
@@ -33,6 +33,12 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.07.15.001 - Self-health snapshot. Each run now reports a 'health'
+             object to Battlefield (task state found at run start, whether the
+             task/config were successfully ensured, next run time, schedule).
+             Lets the dashboard flag boxes whose agentless loop needed repair,
+             riding the existing report POST - no extra component or on-box
+             script. Read-only capture; changes nothing about the run.
     v2026.07.14.001 - Two field fixes. (1) The Process Engine no longer flags or
              removes ShellKnight's OWN self-scheduling task: its launcher runs
              powershell -NoProfile -ExecutionPolicy Bypass, which tripped the
@@ -269,7 +275,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.07.14.001 CONFIGURATION
+# SHELLKNIGHT v2026.07.15.001 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -447,7 +453,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.07.14.001'
+    Version                  = 'v2026.07.15.001'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -812,7 +818,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.07.14.001'
+$version     = 'ShellKnight v2026.07.15.001'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -833,6 +839,25 @@ Log-Info $line
 # ==============================================================================
 # SELF-MAINTENANCE: persist config + ensure scheduled task (ADR 0007)
 # ==============================================================================
+# Self-health snapshot: reported to Battlefield in this run's payload so the
+# dashboard can flag boxes whose agentless loop needed repair. Captured BEFORE
+# the self-heal below, so task_state_at_start reflects what we FOUND, not what
+# we leave behind (which is always Ready after the ensure step).
+$Script:Health = [ordered]@{
+    task_state_at_start = 'Unknown'
+    task_ensured        = $false
+    config_ok           = $false
+    self_scheduled      = [bool]$SK_SelfSchedule
+    schedule_hours      = $SK_ScheduleHours
+    next_run            = $null
+}
+try {
+    $existingTask = Get-ScheduledTask -TaskName 'ShellKnight' -ErrorAction Stop
+    $Script:Health.task_state_at_start = "$($existingTask.State)"
+} catch {
+    $Script:Health.task_state_at_start = 'Missing'
+}
+
 # Persist settings so scheduled runs (no Datto, no env) stay self-sufficient.
 if ($SK_Battlefield_ApiKey) {
     try {
@@ -846,6 +871,7 @@ if ($SK_Battlefield_ApiKey) {
             SiteName          = $SK_SiteName
             UpdatedUtc        = (Get-Date).ToUniversalTime().ToString('o')
         } | ConvertTo-Json | Set-Content -LiteralPath $Script:ConfigPath -Encoding UTF8 -Force
+        $Script:Health.config_ok = $true
     } catch { Log-Warn "Could not write config.json: $($_.Exception.Message)" }
 }
 
@@ -866,6 +892,8 @@ try { Invoke-RestMethod -Uri 'https://raw.githubusercontent.com/cdburgess75/Shel
         $action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$launcher`""
         & schtasks.exe /Create /TN 'ShellKnight' /TR $action /SC HOURLY /MO $SK_ScheduleHours `
             /ST $startTime /RU 'SYSTEM' /RL HIGHEST /F 2>$null | Out-Null
+        $Script:Health.task_ensured = ($LASTEXITCODE -eq 0)
+        try { $Script:Health.next_run = (Get-ScheduledTaskInfo -TaskName 'ShellKnight' -ErrorAction Stop).NextRunTime.ToString('o') } catch {}
         Log-Info "Self-schedule ensured: every $SK_ScheduleHours h at :$startTime (SYSTEM)"
     } catch { Log-Warn "Self-schedule failed: $($_.Exception.Message)" }
 }
@@ -2988,7 +3016,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.07.14.001 - Report"
+Log-Info "  ShellKnight v2026.07.15.001 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -3001,7 +3029,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.07.14.001 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.07.15.001 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -3126,7 +3154,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.07.14.001'
+    version          = 'v2026.07.15.001'
     device_id        = $Script:MachineInfo['Device ID']
     hardware_type    = $Script:MachineInfo['Hardware Type']
     site_name        = $SK_SiteName
@@ -3171,6 +3199,7 @@ $jsonData = [ordered]@{
     failed_actions   = $Script:Counters.Failed
     findings         = @($Script:Findings | ForEach-Object { [ordered]@{ severity = $_.Severity; title = $_.Title; action = $_.Action } })
     log_path         = $Script:LogPath
+    health           = $Script:Health
 }
 
 $jsonBody = $jsonData | ConvertTo-Json -Depth 4
