@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.07.15.001  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.07.17.001  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,7 +18,7 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.07.15.001
+    Version    : v2026.07.17.001
     Released   : 2026-07-12
     Prior      : v2026.07.03.015
 
@@ -33,6 +33,10 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.07.17.001 - Ptech toolbox inventory. Each run now reports a
+             'ptech_tools' object (root_exists, present, expected, missing[])
+             checking C:\Ptech for the vetted admin toolset, so the dashboard
+             can show which boxes are provisioned. Read-only; downloads nothing.
     v2026.07.15.001 - Self-health snapshot. Each run now reports a 'health'
              object to Battlefield (task state found at run start, whether the
              task/config were successfully ensured, next run time, schedule).
@@ -275,7 +279,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.07.15.001 CONFIGURATION
+# SHELLKNIGHT v2026.07.17.001 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -453,7 +457,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.07.15.001'
+    Version                  = 'v2026.07.17.001'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -818,7 +822,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.07.15.001'
+$version     = 'ShellKnight v2026.07.17.001'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -3016,7 +3020,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.07.15.001 - Report"
+Log-Info "  ShellKnight v2026.07.17.001 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -3029,7 +3033,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.07.15.001 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.07.17.001 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -3148,13 +3152,48 @@ Write-Host "  #$(' ' * 76)#" -ForegroundColor $bannerColor
 Write-Host "  $('#' * 78)" -ForegroundColor $bannerColor
 Write-Host ''
 
+# --- Ptech toolbox inventory (C:\Ptech) - reported to Battlefield -------------
+# Read-only: checks whether the vetted admin tools are present so the dashboard
+# can show which boxes are provisioned. Does NOT download or place anything.
+$ptechRoot = 'C:\Ptech'
+$ptechExpected = [ordered]@{
+    'Sysinternals\procexp64.exe'   = 'Process Explorer'
+    'Sysinternals\Procmon64.exe'   = 'Process Monitor'
+    'Sysinternals\Tcpview64.exe'   = 'TCPView'
+    'Sysinternals\RAMMap64.exe'    = 'RAMMap'
+    'Sysinternals\Listdlls64.exe'  = 'ListDLLs'
+    'Sysinternals\vmmap64.exe'     = 'VMMap'
+    'Sysinternals\Coreinfo64.exe'  = 'Coreinfo'
+    'Sysinternals\autorunsc64.exe' = 'autorunsc'
+    'Sysinternals\Autoruns64.exe'  = 'Autoruns'
+    'Sysinternals\PsPing.exe'      = 'PsPing'
+    'Sysinternals\ADExplorer64.exe'= 'ADExplorer'
+    'Sysinternals\disk2vhd64.exe'  = 'Disk2vhd'
+    'Sysinternals\Bginfo64.exe'    = 'BGInfo'
+    'Sysinternals\ZoomIt64.exe'    = 'ZoomIt'
+    'Sysinternals\Sysmon64.exe'    = 'Sysmon'
+    'WizTree\WizTree64.exe'        = 'WizTree'
+    'Everything\Everything.exe'    = 'Everything'
+}
+$ptechMissing = @(); $ptechPresent = 0
+foreach ($rel in $ptechExpected.Keys) {
+    if (Test-Path -LiteralPath (Join-Path $ptechRoot $rel)) { $ptechPresent++ }
+    else { $ptechMissing += $ptechExpected[$rel] }
+}
+$Script:PtechTools = [ordered]@{
+    root_exists = [bool](Test-Path -LiteralPath $ptechRoot)
+    present     = $ptechPresent
+    expected    = $ptechExpected.Count
+    missing     = $ptechMissing
+}
+
 # JSON output
 $jsonDir  = 'C:\ProgramData\ShellKnight\JSON'
 $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.07.15.001'
+    version          = 'v2026.07.17.001'
     device_id        = $Script:MachineInfo['Device ID']
     hardware_type    = $Script:MachineInfo['Hardware Type']
     site_name        = $SK_SiteName
@@ -3200,6 +3239,7 @@ $jsonData = [ordered]@{
     findings         = @($Script:Findings | ForEach-Object { [ordered]@{ severity = $_.Severity; title = $_.Title; action = $_.Action } })
     log_path         = $Script:LogPath
     health           = $Script:Health
+    ptech_tools      = $Script:PtechTools
 }
 
 $jsonBody = $jsonData | ConvertTo-Json -Depth 4
