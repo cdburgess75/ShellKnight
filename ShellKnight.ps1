@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.07.17.001  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.07.30.001  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,7 +18,7 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.07.17.001
+    Version    : v2026.07.30.001
     Released   : 2026-07-12
     Prior      : v2026.07.03.015
 
@@ -33,6 +33,15 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.07.30.001 - Assessment Engine restored. Win32_BIOS.ReleaseDate is a
+             DateTime under Get-CimInstance, but was being parsed as the legacy
+             WMI string; the MethodNotFound error aborted the whole engine four
+             statements in, on every run since the CIM migration. Nothing after
+             it ran: no OS/EOL, domain, uptime, BitLocker, Windows Update or
+             AV/EDR detection - so every endpoint reported 'NONE DETECTED' for
+             antivirus as a fact - and no device_id, so devices enrolled under
+             the host:<name> fallback. BIOS date handling is now shared and
+             non-throwing (ConvertTo-BiosDate).
     v2026.07.17.001 - Ptech toolbox inventory. Each run now reports a
              'ptech_tools' object (root_exists, present, expected, missing[])
              checking C:\Ptech for the vetted admin toolset, so the dashboard
@@ -279,7 +288,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.07.17.001 CONFIGURATION
+# SHELLKNIGHT v2026.07.30.001 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -457,7 +466,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.07.17.001'
+    Version                  = 'v2026.07.30.001'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -720,6 +729,31 @@ function Invoke-SafeBlock {
     catch { Log-Info "$Label skipped  -  $($_.Exception.Message)" }
 }
 
+# Win32_BIOS.ReleaseDate, normalised to a DateTime.
+#
+# Get-CimInstance already returns a DateTime here; only the legacy
+# Get-WmiObject path yielded the CIM_DATETIME string ('20200115000000.000000
+# +000') that needs parsing. Calling .Split() on the DateTime raises
+# MethodNotFound, which is a terminating error - and because the BIOS date is
+# read four statements into the Assessment Engine's Invoke-SafeBlock, that
+# aborted the ENTIRE engine on every run: no OS, no domain, no BitLocker, no
+# AV/EDR detection (leaving the "NONE DETECTED" default reported as fact) and
+# no device_id, so the whole fleet enrolled under the host:<name> fallback.
+# Handle both shapes and never throw; an unusable value costs a PC-age
+# estimate, not the engine.
+function ConvertTo-BiosDate {
+    param($ReleaseDate)
+    if ($ReleaseDate -is [datetime]) { return $ReleaseDate }
+    # CIM_DATETIME is 'yyyymmddHHMMSS.mmmmmmsUUU' - take the leading 8 chars.
+    # (The original .Split('.')[0] left all 14 date/time digits, which
+    # ParseExact rejects against 'yyyyMMdd', so the legacy path was broken too.)
+    $s = [string]$ReleaseDate
+    if ($s.Length -ge 8) {
+        try { return [datetime]::ParseExact($s.Substring(0, 8), 'yyyyMMdd', $null) } catch { }
+    }
+    return (Get-Date)   # unknown age; scores treat this as a new machine
+}
+
 # Get folder size in bytes
 function Get-FolderSizeBytes {
     param([string]$Path)
@@ -822,7 +856,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.07.17.001'
+$version     = 'ShellKnight v2026.07.30.001'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -1036,7 +1070,7 @@ if ($Script:Config.AssessmentEngine_Enabled) {
         $osName    = $os.Caption
         $osBuild   = $os.BuildNumber
         $arch      = if ($os.OSArchitecture -match '64') { '64-bit' } else { '32-bit' }
-        $biosDate  = [datetime]::ParseExact($bios.ReleaseDate.Split('.')[0],'yyyyMMdd',$null)
+        $biosDate  = ConvertTo-BiosDate $bios.ReleaseDate
         $pcAgeYrs  = [math]::Round(((Get-Date) - $biosDate).TotalDays / 365.25, 1)
         $lastBoot  = $os.LastBootUpTime
         $uptime    = (Get-Date) - $lastBoot
@@ -2994,7 +3028,7 @@ $uptimeDays = if ($os2) { ((Get-Date) - $os2.LastBootUpTime).TotalDays } else { 
 if ($uptimeDays -gt 60)    { $Script:PerformanceScore -= 20 }
 elseif ($uptimeDays -gt 30){ $Script:PerformanceScore -= 10 }
 
-$biosDate2 = try { [datetime]::ParseExact((Get-CimInstance Win32_BIOS).ReleaseDate.Split('.')[0],'yyyyMMdd',$null) } catch { (Get-Date) }
+$biosDate2 = ConvertTo-BiosDate (Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue).ReleaseDate
 $pcAge2    = ((Get-Date) - $biosDate2).TotalDays / 365.25
 if ($pcAge2 -gt 5)         { $Script:PerformanceScore -= 15 }
 $Script:PerformanceScore = [math]::Max(0, $Script:PerformanceScore)
@@ -3020,7 +3054,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.07.17.001 - Report"
+Log-Info "  ShellKnight v2026.07.30.001 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -3033,7 +3067,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.07.17.001 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.07.30.001 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -3193,7 +3227,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.07.17.001'
+    version          = 'v2026.07.30.001'
     device_id        = $Script:MachineInfo['Device ID']
     hardware_type    = $Script:MachineInfo['Hardware Type']
     site_name        = $SK_SiteName

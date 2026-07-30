@@ -1,5 +1,10 @@
 # ShellKnight Changelog
 
+## [v2026.07.30.001] - 2026-07-30
+
+- **Assessment Engine — restored (critical):** `Win32_BIOS.ReleaseDate` is already a `DateTime` under `Get-CimInstance`, but was still being parsed as the legacy `Get-WmiObject` CIM_DATETIME string via `.Split('.')`. Calling a string method on a `DateTime` raises MethodNotFound — a terminating error — and because the BIOS date is read four statements into the engine's `Invoke-SafeBlock`, **the entire Assessment Engine aborted on every run** and the failure was swallowed as an informational log line. Everything after that point never executed: OS name/build/EOL, architecture, RAM, PC age, uptime, last boot, domain/workgroup, logged-in user, disk figures, BitLocker status, Windows Update recency, and AV/EDR/Defender detection. Two consequences were reported to the dashboard as fact rather than as missing data: **every endpoint reported `antivirus: "NONE DETECTED"`** (the pre-block default, never overwritten by real detection), and **`device_id` was null**, so devices enrolled under the `host:<name>` fallback instead of a stable hardware id (ADR 0006). BIOS date parsing is now a single non-throwing helper (`ConvertTo-BiosDate`) handling both the CIM `DateTime` and the legacy string, used by both call sites. The legacy path was itself broken — `.Split('.')[0]` left all 14 date/time digits, which `ParseExact` rejects against `yyyyMMdd` — so it now takes the leading 8 characters.
+- **Regression test:** `tests/Test-BiosDate.ps1` extracts and exercises the helper against a CIM `DateTime`, a legacy CIM_DATETIME string, `$null`, and garbage; wired into the CI workflow so this class of failure cannot ship silently again.
+
 ## [v1.05] - 2026-05-25
 
 - **Process Engine — NVDisplay/Intel feed false positive fix (critical):** Added CIM `Win32_Process` fallback when `Get-Process.Path` returns null (occurs on NVIDIA driver processes and other kernel-adjacent processes). If path is still unavailable after CIM fallback, fail-safe to **skip** rather than kill. Path comparison upgraded to `OrdinalIgnoreCase` via `StartsWith`.
