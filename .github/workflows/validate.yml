@@ -12,6 +12,10 @@ on:
     paths: ['**.ps1', '.github/workflows/validate.yml']
   workflow_dispatch:
 
+# Note: this workflow is the only gate between an edit and every managed
+# endpoint, because the fleet pulls ShellKnight.ps1 from raw main on each run.
+# Validate on a branch before merging.
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -31,6 +35,18 @@ jobs:
               throw "Parse FAILED: $($errors.Count) syntax error(s)"
           }
           Write-Host "Parse OK - ShellKnight.ps1 has no syntax errors"
+
+      - name: Unit tests (pure helpers, no Windows needed)
+        shell: pwsh
+        run: |
+          $failed = 0
+          Get-ChildItem ./tests -Filter 'Test-*.ps1' -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "::group::$($_.Name)"
+              & $_.FullName
+              if ($LASTEXITCODE -ne 0) { $failed++ }
+              Write-Host "::endgroup::"
+          }
+          if ($failed -gt 0) { throw "$failed test script(s) failed" }
 
       - name: PSScriptAnalyzer (errors block, warnings inform)
         shell: pwsh
