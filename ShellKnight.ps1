@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.07.30.001  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.09.08.001  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.07.30.001
-    Released   : 2026-07-12
-    Prior      : v2026.07.03.015
+    Version    : v2026.09.08.001
+    Released   : 2026-09-08
+    Prior      : v2026.07.30.001
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,24 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.09.08.001 - AV/Defender detection fixed; the whole fleet was scoring
+             as unprotected. Two compounding defects. (1) Defender was filtered
+             out of the AV list - correct, since it has its own field - but
+             never credited back, so a Defender-only endpoint (i.e. nearly every
+             modern Windows box) left $avProduct at its 'NONE DETECTED' default
+             and lost 25 security points. (2) Get-MpComputerStatus needs the
+             Defender module, which is not reliably loadable under SYSTEM in a
+             -NoProfile runspace; it threw on all 20 endpoints, and the catch
+             set only $defSigs, so $defStatus silently stayed 'Unknown' and a
+             failed probe was indistinguishable from a real answer. Defender
+             status now falls back MpComputerStatus -> CIM MSFT_MpComputerStatus
+             -> WinDefend service + DisableRealtimeMonitoring registry value.
+             Scoring now reads a boolean ($Script:HasActiveAv) guarded by
+             $Script:AvDetectionRan rather than matching a string default, so a
+             detection that FAILS is scored as unknown, never as guilty - the
+             same class of bug that v2026.07.30.001 fixed from a different
+             cause. Defender registered with Security Center counts as
+             protection unless real-time protection is positively known off.
     v2026.07.30.001 - Assessment Engine restored. Win32_BIOS.ReleaseDate is a
              DateTime under Get-CimInstance, but was being parsed as the legacy
              WMI string; the MethodNotFound error aborted the whole engine four
@@ -288,7 +306,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.07.30.001 CONFIGURATION
+# SHELLKNIGHT v2026.09.08.001 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -466,7 +484,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.07.30.001'
+    Version                  = 'v2026.09.08.001'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -856,7 +874,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.07.30.001'
+$version     = 'ShellKnight v2026.09.08.001'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -1056,6 +1074,11 @@ $wuLastWarn         = $false
 $avProduct          = 'NONE DETECTED'
 $edrProduct         = 'None detected'
 $defStatus          = 'Unknown'
+# Scored separately from $avProduct so a *failed* detection can never be scored
+# as "unprotected" - that mistake has cost the whole fleet 25 points twice now
+# (v2026.07.30.001's aborted engine, and the Defender-excluded-from-AV bug).
+$Script:HasActiveAv    = $false
+$Script:AvDetectionRan = $false
 $inactiveAccounts   = (New-Object 'System.Collections.Generic.List[object]')
 $Script:MinPasswordLen = 0
 
@@ -1128,13 +1151,18 @@ if ($Script:Config.AssessmentEngine_Enabled) {
         # RAM
         $ramGB = [math]::Round($cs.TotalPhysicalMemory / 1GB, 1)
 
-        # AV Detection
+        # AV Detection. Defender is kept OUT of $avProducts (it has its own
+        # Defender/Defender Sigs fields) but is remembered separately - it is the
+        # only AV on most modern endpoints, so treating "no third-party AV" as
+        # "no protection" scored the whole fleet as unprotected.
         $avProducts = (New-Object 'System.Collections.Generic.List[string]')
+        $defenderRegistered = $false
         try {
             $avList = Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName 'AntiVirusProduct' -ErrorAction Stop
             foreach ($av in $avList) {
                 $avName = $av.displayName
-                if ($avName -notmatch 'Windows Defender') { $avProducts.Add($avName) }
+                if ($avName -match 'Windows Defender|Microsoft Defender') { $defenderRegistered = $true }
+                else { $avProducts.Add($avName) }
             }
         } catch { }
 
@@ -1142,7 +1170,6 @@ if ($Script:Config.AssessmentEngine_Enabled) {
         if (Get-Service -Name 'EndpointProtectionService2' -ErrorAction SilentlyContinue) {
             $avProducts.Add('Datto AV')
         }
-        if ($avProducts.Count -gt 0) { $avProduct = $avProducts -join ', ' }
 
         # EDR / managed-security agent detection by service name. SecurityCenter2
         # only reports registered AV, so EDR-only tools (SentinelOne, CrowdStrike,
@@ -1179,12 +1206,48 @@ if ($Script:Config.AssessmentEngine_Enabled) {
         }
         $edrProduct = if ($edrFound.Count -gt 0) { ($edrFound | Sort-Object -Unique) -join ', ' } else { 'None detected' }
 
-        # Defender status
+        # Defender status. Get-MpComputerStatus needs the Defender PowerShell
+        # module, which is not reliably loadable under SYSTEM in a -NoProfile
+        # runspace - it was throwing on every endpoint in the fleet, and the old
+        # catch only set $defSigs, so $defStatus silently stayed 'Unknown'. Fall
+        # back to the CIM class, then to the service + registry, so a module
+        # failure can never be mistaken for "no protection". $defRtp stays $null
+        # while genuinely unknown so it is distinguishable from a real DISABLED.
+        $defRtp = $null
         try {
             $mp = Get-MpComputerStatus -ErrorAction Stop
-            $defStatus = if ($mp.AMServiceEnabled -and $mp.RealTimeProtectionEnabled) { 'Active' } else { 'DISABLED' }
-            $defSigs   = $mp.AntivirusSignatureLastUpdated.ToString('yyyy-MM-dd')
-        } catch { $defSigs = 'Unknown' }
+            $defRtp  = [bool]($mp.AMServiceEnabled -and $mp.RealTimeProtectionEnabled)
+            $defSigs = $mp.AntivirusSignatureLastUpdated.ToString('yyyy-MM-dd')
+        } catch {
+            try {
+                $mp = Get-CimInstance -Namespace 'root\Microsoft\Windows\Defender' -ClassName 'MSFT_MpComputerStatus' -ErrorAction Stop
+                $defRtp = [bool]($mp.AMServiceEnabled -and $mp.RealTimeProtectionEnabled)
+                if ($mp.AntivirusSignatureLastUpdated) {
+                    $defSigs = ([datetime]$mp.AntivirusSignatureLastUpdated).ToString('yyyy-MM-dd')
+                }
+            } catch {
+                $wd = Get-Service -Name 'WinDefend' -ErrorAction SilentlyContinue
+                if ($wd) {
+                    $disableRtp = $null
+                    try {
+                        $disableRtp = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows Defender\Real-Time Protection' `
+                                       -Name 'DisableRealtimeMonitoring' -ErrorAction Stop).DisableRealtimeMonitoring
+                    } catch { }
+                    $defRtp = ($wd.Status -eq 'Running' -and $disableRtp -ne 1)
+                }
+            }
+        }
+        $defStatus = if ($null -eq $defRtp) { 'Unknown' } elseif ($defRtp) { 'Active' } else { 'DISABLED' }
+
+        # Resolve the reported AV product and whether the box is actually
+        # protected. Defender registered with Security Center counts as
+        # protection unless we positively know real-time protection is off.
+        if     ($avProducts.Count -gt 0)  { $avProduct = $avProducts -join ', ' }
+        elseif ($defStatus -eq 'Active')  { $avProduct = 'Windows Defender' }
+        elseif ($defenderRegistered)      { $avProduct = "Windows Defender (status $defStatus)" }
+        $Script:HasActiveAv = ($avProducts.Count -gt 0) -or ($defStatus -eq 'Active') -or
+                              ($defenderRegistered -and $defStatus -ne 'DISABLED')
+        $Script:AvDetectionRan = $true
 
         # Windows Update last install
         $wuDate = $null
@@ -2993,7 +3056,7 @@ if ($Script:Config.ReportingEngine_Enabled) {
 $Script:SecurityScore = 100
 if ($Script:Counters.IOCsFound -gt 0)            { $Script:SecurityScore -= [math]::Min(50, $Script:Counters.IOCsFound * 15) }
 if ($Script:Counters.Failed)                      { $Script:SecurityScore -= 10 }
-if ($avProduct -eq 'NONE DETECTED')               { $Script:SecurityScore -= 25 }
+if ($Script:AvDetectionRan -and -not $Script:HasActiveAv) { $Script:SecurityScore -= 25 }
 if ($defStatus -eq 'DISABLED')                    { $Script:SecurityScore -= 20 }
 if ($osEolWarn)                                   { $Script:SecurityScore -= 20 }
 if ($bitlockerWarn)                               { $Script:SecurityScore -= 15 }
@@ -3054,7 +3117,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.07.30.001 - Report"
+Log-Info "  ShellKnight v2026.09.08.001 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -3067,7 +3130,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.07.30.001 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.09.08.001 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -3227,7 +3290,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.07.30.001'
+    version          = 'v2026.09.08.001'
     device_id        = $Script:MachineInfo['Device ID']
     hardware_type    = $Script:MachineInfo['Hardware Type']
     site_name        = $SK_SiteName
