@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.09.08.001  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.09.08.002  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.09.08.001
+    Version    : v2026.09.08.002
     Released   : 2026-09-08
-    Prior      : v2026.07.30.001
+    Prior      : v2026.09.08.001
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,29 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.09.08.002 - Passive network inventory. Each run now reports a
+             'network' object: IPv4 interfaces (ip/prefix/gateway/dns), the
+             neighbour (ARP) cache, and listening TCP ports tagged 'all' or
+             'local' so loopback-only services are not counted as exposed
+             surface. Battlefield unions these across a site's endpoints;
+             anything in the union that is not a managed device is an UNMANAGED
+             device - the printer, NAS or camera recorder that no agent covers.
+             Deliberately passive: the neighbour cache records conversations
+             that already happened, so no sweep, no probe, and nothing for EDR
+             to flag. LAN visibility now scales with ShellKnight coverage
+             instead of needing a scanner appliance per site. Listening ports
+             were already being collected for the RAT-port check and simply
+             discarded; they are now exported. MACs go up raw so OUI-to-vendor
+             lookup can live in Battlefield and be updated without shipping a
+             new script to the fleet. Neighbour list capped
+             ($SK_NetworkInventory_MaxNeighbors, default 512); every section is
+             individually wrapped so a missing cmdlet on an older OS costs that
+             section, never the run. JSON depth raised 4 -> 5 to fit it.
+             Collections use ArrayList, not List[object]: wrapping a
+             List[object] of [ordered] hashtables in @() throws "Argument types
+             do not match", which Invoke-SafeBlock would have swallowed and
+             left the network object empty on every endpoint - caught in test
+             before shipping.
     v2026.09.08.001 - AV/Defender detection fixed; the whole fleet was scoring
              as unprotected. Two compounding defects. (1) Defender was filtered
              out of the AV list - correct, since it has its own field - but
@@ -306,7 +329,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.09.08.001 CONFIGURATION
+# SHELLKNIGHT v2026.09.08.002 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -415,6 +438,21 @@ $SK_AutoDisableExclusions        = @('Administrator','Guest','DefaultAccount','W
 # were deleted rather than left as silent no-ops. Centralized alerting arrives
 # with the Battlefield dashboard (JSON POST ingest, see docs/adr/0001).
 
+# --- NETWORK INVENTORY (passive) ---
+# Distributed LAN discovery with no scanning. Every endpoint reports what
+# Windows already knows: its own interfaces, its neighbour (ARP) table, and its
+# listening ports. Battlefield unions these across a site's endpoints, and
+# anything in the union that is not a managed device is an UNMANAGED device -
+# the printer, the NAS, the camera recorder nobody remembers installing.
+#
+# Nothing here sends a packet the machine would not have sent anyway: the
+# neighbour table is a cache of conversations that already happened. There is
+# no sweep, no probe, and nothing for EDR to flag. Coverage of a site's network
+# grows with ShellKnight coverage, which is the point - no appliance, no VM, no
+# second agent.
+$SK_NetworkInventory_Enabled     = $true    # Report interfaces / neighbours / listeners
+$SK_NetworkInventory_MaxNeighbors= 512      # Cap payload on a chatty host
+
 # --- BATTLEFIELD DASHBOARD (JSON push) ---
 # POST the run report JSON to the Battlefield ingest endpoint at end of run
 # (ADR 0001/0002). Gated OFF by default - enable per-deployment once the HTTPS
@@ -484,7 +522,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.09.08.001'
+    Version                  = 'v2026.09.08.002'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -874,7 +912,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.09.08.001'
+$version     = 'ShellKnight v2026.09.08.002'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -3117,7 +3155,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.09.08.001 - Report"
+Log-Info "  ShellKnight v2026.09.08.002 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -3130,7 +3168,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.09.08.001 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.09.08.002 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -3284,13 +3322,125 @@ $Script:PtechTools = [ordered]@{
     missing     = $ptechMissing
 }
 
+# ==============================================================================
+# NETWORK INVENTORY (passive - see config notes above)
+# ==============================================================================
+# Every collection is wrapped so a missing cmdlet on an older OS, or a single
+# malformed row, costs that one section and never the run. MAC addresses are
+# sent raw; OUI-to-vendor lookup happens in Battlefield so the vendor table can
+# be updated without shipping a new script to the fleet.
+#
+# NOTE: these three use ArrayList, NOT List[object], deliberately. Wrapping a
+# List[object] that holds [ordered] hashtables in @() throws "Argument types do
+# not match" - which Invoke-SafeBlock would swallow, leaving the network object
+# silently empty on every endpoint. That is the same shape of failure as the
+# Defender bug: a collection that fails quietly and reports a default as fact.
+# ArrayList round-trips through @() and ConvertTo-Json correctly. Do not
+# "simplify" these back to a generic List.
+$Script:NetInventory = [ordered]@{
+    interfaces = @()
+    neighbors  = @()
+    listeners  = @()
+}
+
+if ($SK_NetworkInventory_Enabled) {
+
+    Invoke-SafeBlock -Label 'Network inventory (interfaces)' -Block {
+        $ifaces = @(Get-NetIPConfiguration -ErrorAction Stop)
+        $out = (New-Object System.Collections.ArrayList)
+        foreach ($nic in $ifaces) {
+            # StrictMode: probe before touching. An adapter with no IPv4, no
+            # gateway or no DNS is normal and must not throw.
+            $v4 = $null; $gw = $null; $dns = @()
+            if ($nic.PSObject.Properties['IPv4Address'] -and $nic.IPv4Address) {
+                $v4 = @($nic.IPv4Address)[0].IPAddress
+            }
+            if (-not $v4) { continue }
+            if ($nic.PSObject.Properties['IPv4DefaultGateway'] -and $nic.IPv4DefaultGateway) {
+                $gw = @($nic.IPv4DefaultGateway)[0].NextHop
+            }
+            if ($nic.PSObject.Properties['DNSServer'] -and $nic.DNSServer) {
+                $dns = @($nic.DNSServer | Where-Object { $_.AddressFamily -eq 2 } |
+                         ForEach-Object { $_.ServerAddresses } | Where-Object { $_ })
+            }
+            $prefix = $null
+            if ($nic.PSObject.Properties['IPv4Address'] -and $nic.IPv4Address -and
+                @($nic.IPv4Address)[0].PSObject.Properties['PrefixLength']) {
+                $prefix = @($nic.IPv4Address)[0].PrefixLength
+            }
+            $null = $out.Add([ordered]@{
+                alias   = $nic.InterfaceAlias
+                ip      = $v4
+                prefix  = $prefix
+                gateway = $gw
+                dns     = ($dns -join ',')
+            })
+        }
+        $Script:NetInventory.interfaces = @($out)
+        Log-Info "Network inventory  -  $($out.Count) IPv4 interface(s)"
+    }
+
+    Invoke-SafeBlock -Label 'Network inventory (neighbours)' -Block {
+        # The neighbour cache is a record of conversations that already
+        # happened. Reachable/Stale/Permanent only: Incomplete and Unreachable
+        # are failed lookups and would report phantom hosts.
+        $nb = @(Get-NetNeighbor -AddressFamily IPv4 -ErrorAction Stop |
+                Where-Object { $_.State -in 'Reachable','Stale','Permanent' })
+        $out = (New-Object System.Collections.ArrayList)
+        foreach ($n in $nb) {
+            $ip  = [string]$n.IPAddress
+            $mac = [string]$n.LinkLayerAddress
+            if (-not $ip -or -not $mac) { continue }
+            # Drop multicast (224-239), broadcast and the all-zero placeholder.
+            if ($mac -eq '00-00-00-00-00-00' -or $mac -eq 'FF-FF-FF-FF-FF-FF') { continue }
+            $first = [int]($ip -split '\.')[0]
+            if ($first -ge 224) { continue }
+            if ($ip -eq '255.255.255.255') { continue }
+            $null = $out.Add([ordered]@{
+                ip    = $ip
+                mac   = $mac.ToUpper()
+                state = [string]$n.State
+            })
+            if ($out.Count -ge $SK_NetworkInventory_MaxNeighbors) { break }
+        }
+        $Script:NetInventory.neighbors = @($out)
+        Log-Info "Network inventory  -  $($out.Count) LAN neighbour(s) in cache"
+    }
+
+    Invoke-SafeBlock -Label 'Network inventory (listeners)' -Block {
+        # Which ports this host actually exposes. 'local' means bound to
+        # loopback only and therefore not reachable from the network - a
+        # distinction that matters when reporting a machine's attack surface.
+        $lis = @(Get-NetTCPConnection -State Listen -ErrorAction Stop)
+        $seen = (New-Object 'System.Collections.Generic.HashSet[string]')
+        $out  = (New-Object System.Collections.ArrayList)
+        foreach ($l in ($lis | Sort-Object LocalPort)) {
+            $addr = [string]$l.LocalAddress
+            $scope = if ($addr -eq '127.0.0.1' -or $addr -eq '::1') { 'local' } else { 'all' }
+            $key = "$($l.LocalPort)/$scope"
+            if (-not $seen.Add($key)) { continue }
+            $procName = 'unknown'
+            $p = Get-Process -Id $l.OwningProcess -ErrorAction SilentlyContinue
+            if ($p) { $procName = $p.Name }
+            $null = $out.Add([ordered]@{
+                port    = [int]$l.LocalPort
+                scope   = $scope
+                process = $procName
+            })
+        }
+        $Script:NetInventory.listeners = @($out)
+        $exposed = @($out | Where-Object { $_.scope -eq 'all' }).Count
+        Log-Info "Network inventory  -  $($out.Count) listening port(s), $exposed network-exposed"
+    }
+}
+
 # JSON output
 $jsonDir  = 'C:\ProgramData\ShellKnight\JSON'
 $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.09.08.001'
+    version          = 'v2026.09.08.002'
     device_id        = $Script:MachineInfo['Device ID']
     hardware_type    = $Script:MachineInfo['Hardware Type']
     site_name        = $SK_SiteName
@@ -3337,9 +3487,12 @@ $jsonData = [ordered]@{
     log_path         = $Script:LogPath
     health           = $Script:Health
     ptech_tools      = $Script:PtechTools
+    network          = $Script:NetInventory
 }
 
-$jsonBody = $jsonData | ConvertTo-Json -Depth 4
+# Depth 5: network -> neighbors[] -> entry -> value is one level deeper than
+# anything previously exported.
+$jsonBody = $jsonData | ConvertTo-Json -Depth 5
 $jsonBody | Set-Content -LiteralPath $jsonPath -Encoding UTF8 -Force
 Log-Info "JSON report saved: $jsonPath"
 
