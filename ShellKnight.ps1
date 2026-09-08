@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.09.08.003  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.09.08.004  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.09.08.003
+    Version    : v2026.09.08.004
     Released   : 2026-09-08
-    Prior      : v2026.09.08.002
+    Prior      : v2026.09.08.003
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,18 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.09.08.004 - Event 7045 whitelist completed from operator confirmation:
+             rtp1 / rtp2 / rtp_elam (the remaining real-time-protection drivers
+             from the same Bitdefender/Avira package already whitelisted in .003)
+             and NordVPN Divert Driver. The rtp* names are short and generic,
+             which is a weaker entry than we would normally accept - they install
+             to a bare system32\DRIVERS path with no vendor directory to key on -
+             so they are commented as the first three to remove if a name
+             collision is ever suspected. Whitelisting NordVPN suppresses the
+             service-install alert only; an unsanctioned VPN still surfaces
+             through the installed-software inventory.
+             (Dell SARemediation and the Avira filter/sentry drivers were already
+             whitelisted in .003.)
     v2026.09.08.003 - STOPPED KILLING LEGITIMATE SOFTWARE. The malware
              process-name check used a bare -match, i.e. an unanchored regex, so
              every pattern matched as a substring. The 'play' family therefore
@@ -360,7 +372,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.09.08.003 CONFIGURATION
+# SHELLKNIGHT v2026.09.08.004 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -553,7 +565,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.09.08.003'
+    Version                  = 'v2026.09.08.004'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -943,7 +955,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.09.08.003'
+$version     = 'ShellKnight v2026.09.08.004'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -2806,13 +2818,22 @@ if ($Script:Config.ReportingEngine_Enabled) {
             'Avira Network Filter',
             'Avira Sentry Driver',
             'netprotection_network_filter',
-            'netprotection_network_filter2'
-            # NOT whitelisted, deliberately:
-            #   rtp1 / rtp2 / rtp_elam - same AV package, but the names are too
-            #     generic to allowlist fleet-wide. Add per-deployment via
-            #     SK_Svc7045_ExtraNames if the noise is not worth the coverage.
-            #   NordVPN Divert Driver - an unsanctioned VPN client is a finding we
-            #     want to keep seeing, not a false positive.
+            'netprotection_network_filter2',
+            # Real-time-protection drivers from the same Bitdefender/Avira package
+            # as the two above. The names are short and generic, which is a weaker
+            # allowlist entry than we would normally accept, but they install to a
+            # bare system32\DRIVERS path so there is no vendor directory to key on
+            # and they were confirmed as the Avira set - operator confirmed
+            # 2026-09-08. Remove these three first if a name collision is ever
+            # suspected.
+            'rtp1',
+            'rtp2',
+            'rtp_elam',
+            # NordVPN kernel driver - operator confirmed 2026-09-08 as sanctioned.
+            # Note this suppresses the 7045 service-install alert only; an
+            # unsanctioned VPN would still surface through the installed-software
+            # inventory, so we are not blind to it.
+            'NordVPN Divert Driver'
         ) | ForEach-Object { $null = $knownGoodSvcs.Add($_) }
         # Per-deployment additions from config
         foreach ($extra in @($Script:Config.Svc7045_ExtraNames)) {
@@ -3226,7 +3247,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.09.08.003 - Report"
+Log-Info "  ShellKnight v2026.09.08.004 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -3239,7 +3260,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.09.08.003 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.09.08.004 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -3511,7 +3532,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.09.08.003'
+    version          = 'v2026.09.08.004'
     device_id        = $Script:MachineInfo['Device ID']
     hardware_type    = $Script:MachineInfo['Hardware Type']
     site_name        = $SK_SiteName
