@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.09.08.002  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.09.08.003  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.09.08.002
+    Version    : v2026.09.08.003
     Released   : 2026-09-08
-    Prior      : v2026.09.08.001
+    Prior      : v2026.09.08.002
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,37 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.09.08.003 - STOPPED KILLING LEGITIMATE SOFTWARE. The malware
+             process-name check used a bare -match, i.e. an unanchored regex, so
+             every pattern matched as a substring. The 'play' family therefore
+             matched NVDisplay.Container and Microsoft.Media.Player. Worse, the
+             path safety check that exists to catch exactly this ran only for
+             Intel-feed filename hits ('if ($inFilenameIOC -and -not
+             $isMalware)'), so a pattern hit went straight to Stop-Process
+             -Force. Result: 170 forced terminations of NVIDIA's display driver
+             container and Windows Media Player across 7 endpoints at one
+             customer before it was noticed - the tool was breaking working
+             machines, not just mis-reporting them.
+             Two fixes. (1) Patterns are now boundary-anchored, using an
+             alphanumeric-only boundary rather than \b, because \b counts '_' as
+             a word character and would miss a real 'conti_v3'. Verified: 9
+             legitimate names (NVDisplay.Container, Microsoft.Media.Player,
+             DisplayLinkManager, displayswitch, Continuum, ContiEdge, cyclops,
+             SteamPlayer, replay-service) no longer match, while play, conti,
+             clop, lockbit, njrat, 'agent tesla', akira, wannacry, play.exe,
+             conti_v3 and svc-lockbit-01 all still do. (2) The path check now
+             runs for BOTH match types, and a name-match inside a vendor path is
+             REPORTED as a Low finding instead of being killed or silently
+             dropped - silently ignoring is how a real intruder in Program Files
+             gets missed, killing is how a display driver gets terminated.
+             Also: Event 7045 whitelist extended for Windows Defender's own
+             components (its MpKsl<hex> driver is randomly named on every
+             definition update, so only the PATH is a stable handle), Defender's
+             drivers\wd\ directory, Dell SARemediation, Bitdefender/Avira engine
+             drivers, and our own Datto rollback driver. NordVPN and the generic
+             rtp1/rtp2/rtp_elam names are deliberately NOT whitelisted - an
+             unsanctioned VPN is a finding worth keeping, and a 4-character
+             service name is too generic to allowlist fleet-wide.
     v2026.09.08.002 - Passive network inventory. Each run now reports a
              'network' object: IPv4 interfaces (ip/prefix/gateway/dns), the
              neighbour (ARP) cache, and listening TCP ports tagged 'all' or
@@ -329,7 +360,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.09.08.002 CONFIGURATION
+# SHELLKNIGHT v2026.09.08.003 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -522,7 +553,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.09.08.002'
+    Version                  = 'v2026.09.08.003'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -912,7 +943,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.09.08.002'
+$version     = 'ShellKnight v2026.09.08.003'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -1624,28 +1655,45 @@ if ($Script:Config.ProcessEngine_Enabled) {
     $killedProcs = 0
     foreach ($proc in $Script:Cache_Processes) {
         if ($Script:LegitProcessNames.Contains($proc.Name)) { continue }
-        $isMalware    = $malwareProcPatterns | Where-Object { $proc.Name -match $_ }
+        # WORD-BOUNDARY match, not substring. A bare -match treats every pattern as
+        # an unanchored regex, so the 'play' family matched NVDisplay.Container and
+        # Microsoft.Media.Player - and because the path check below was skipped for
+        # pattern hits, both were force-killed. 170 terminations across 7 endpoints
+        # before this was caught (field FP 2026-09-08, Richardson Law). Same class of
+        # bug as the bare 'miner' substring fixed earlier; anchoring is the general
+        # fix, so short family names ('play', 'conti', 'clop') stay usable.
+        # Boundary is alphanumeric-only, NOT \b: \b treats '_' as a word character,
+        # which would miss a real 'conti_v3'. Separators must still count as edges.
+        $isMalware = $malwareProcPatterns |
+            Where-Object { $proc.Name -match ('(?<![a-z0-9])' + [regex]::Escape($_) + '(?![a-z0-9])') }
         $inFilenameIOC = $Script:FilenameIOCs.Contains($proc.Name)
         if ($isMalware -or $inFilenameIOC) {
-            # For Intel feed filename matches, verify the process isn't a legit binary
-            # running from a system path before flagging and killing.
-            # Get-Process.Path returns null for some kernel/driver processes (e.g. NVIDIA).
-            # Fall back to CIM Win32_Process for those cases. If path is still unavailable,
-            # fail safe: skip rather than kill.
-            if ($inFilenameIOC -and -not $isMalware) {
-                $procPath = try { (Get-Process -Id $proc.Id -ErrorAction Stop).Path } catch { $null }
-                if (-not $procPath) {
-                    $procPath = try { (Get-CimInstance Win32_Process -Filter "ProcessId=$($proc.Id)" -ErrorAction Stop).ExecutablePath } catch { $null }
-                }
-                if (-not $procPath) {
-                    Log-Summary "Intel IOC name match: $($proc.Name) - path unavailable, skipping (fail-safe)"
-                    continue
-                }
-                $resolvedPath = try { [System.IO.Path]::GetFullPath($procPath) } catch { $procPath }
-                if ($legitProcRoots | Where-Object { $resolvedPath.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) }) {
-                    Log-Summary "Intel IOC name match: $($proc.Name) running from system path - likely legit, skipping ($resolvedPath)"
-                    continue
-                }
+            # Verify the binary isn't a legitimate one before killing. This now runs
+            # for BOTH match types: a name-pattern hit is not stronger evidence than
+            # a feed hit, and treating it as though it were is what allowed a signed
+            # NVIDIA driver process to be terminated on sight.
+            # Get-Process.Path returns null for some kernel/driver processes (e.g.
+            # NVIDIA). Fall back to CIM Win32_Process. If the path is still
+            # unavailable, fail safe: report, never kill.
+            $procPath = try { (Get-Process -Id $proc.Id -ErrorAction Stop).Path } catch { $null }
+            if (-not $procPath) {
+                $procPath = try { (Get-CimInstance Win32_Process -Filter "ProcessId=$($proc.Id)" -ErrorAction Stop).ExecutablePath } catch { $null }
+            }
+            if (-not $procPath) {
+                Log-Summary "IOC name match: $($proc.Name) - path unavailable, not killing (fail-safe)"
+                continue
+            }
+            $resolvedPath = try { [System.IO.Path]::GetFullPath($procPath) } catch { $procPath }
+            if ($legitProcRoots | Where-Object { $resolvedPath.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) }) {
+                # Named like malware but installed where legitimate software lives.
+                # Surface it for a human instead of killing it: silently ignoring is
+                # how a real intruder in Program Files gets missed, and killing is
+                # how a display driver gets terminated.
+                Log-Summary "IOC name match: $($proc.Name) in a vendor path - reporting, NOT killing ($resolvedPath)"
+                Add-Finding -Severity Low `
+                    -Title "Process name resembles known malware: $($proc.Name)" `
+                    -Action "Running from $resolvedPath. Vendor paths are where legitimate software lives, so this was not terminated. Confirm the publisher signature if unfamiliar."
+                continue
             }
             Log-IOC "Malware process detected: $($proc.Name) (PID: $($proc.Id))"
             try {
@@ -2747,7 +2795,24 @@ if ($Script:Config.ReportingEngine_Enabled) {
             # Datto RMM agent service (reinstalls on agent updates) - field FP 2026-06-24
             'CentraStage',
             # Sophos HitmanPro support driver - field FP 2026-06-24
-            'HitmanPro 3.7 Support Driver'
+            'HitmanPro 3.7 Support Driver',
+            # Windows Defender's own components. Defender re-registers these on every
+            # definition update, so they fire constantly - field FP 2026-09-08 RLG.
+            'Microsoft Defender Core Service',
+            'Microsoft WdAiNisDrv Driver',
+            # Bitdefender/Avira engine drivers. Installed to a bare system32\DRIVERS
+            # path with no vendor directory, so a path rule cannot catch these
+            # - field FP 2026-09-08 RLG.
+            'Avira Network Filter',
+            'Avira Sentry Driver',
+            'netprotection_network_filter',
+            'netprotection_network_filter2'
+            # NOT whitelisted, deliberately:
+            #   rtp1 / rtp2 / rtp_elam - same AV package, but the names are too
+            #     generic to allowlist fleet-wide. Add per-deployment via
+            #     SK_Svc7045_ExtraNames if the noise is not worth the coverage.
+            #   NordVPN Divert Driver - an unsanctioned VPN client is a finding we
+            #     want to keep seeing, not a false positive.
         ) | ForEach-Object { $null = $knownGoodSvcs.Add($_) }
         # Per-deployment additions from config
         foreach ($extra in @($Script:Config.Svc7045_ExtraNames)) {
@@ -2762,8 +2827,14 @@ if ($Script:Config.ReportingEngine_Enabled) {
             'silver bullet technology',  # SBT check-scanning suite (SBTKernel, Ranger) - field FP 2026-06-02 RAS1
             'paniniusb',                 # Panini check scanner USB driver - field FP 2026-06-02 RAS1
             'googleupdater',             # Chrome updater re-registers services on every Chrome update - field FP 2026-07-03 PCH-DT
-            'eset\\remoteadministrator'  # ESET PROTECT agent updater re-registers its service - field FP 2026-07-03 St. Michael (regex: \\ = literal backslash)
-
+            'eset\\remoteadministrator', # ESET PROTECT agent updater re-registers its service - field FP 2026-07-03 St. Michael (regex: \\ = literal backslash)
+            # Windows Defender re-registers a randomly-named MpKsl<hex> driver on
+            # every definition update, so the name can never be allowlisted - the
+            # path is the only stable handle - field FP 2026-09-08 RLG.
+            'windows defender',
+            'drivers\\wd\\',             # Defender's driver directory (KslD.sys, WdAiNisDrv.sys)
+            'dell\\saremediation',       # Dell factory remediation plugin (BioNTDrv) - field FP 2026-09-08 RLG
+            'datto rollback driver'      # Our own RMM rollback driver - field FP 2026-09-08 RLG
         ) + @($Script:Config.Svc7045_ExtraPaths | Where-Object { $_ })
 
         $svcGroups = @{}
@@ -3155,7 +3226,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.09.08.002 - Report"
+Log-Info "  ShellKnight v2026.09.08.003 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -3168,7 +3239,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.09.08.002 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.09.08.003 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -3440,7 +3511,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.09.08.002'
+    version          = 'v2026.09.08.003'
     device_id        = $Script:MachineInfo['Device ID']
     hardware_type    = $Script:MachineInfo['Hardware Type']
     site_name        = $SK_SiteName
