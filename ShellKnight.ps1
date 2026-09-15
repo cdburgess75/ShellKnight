@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.09.08.004  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.09.15.001  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.09.08.004
-    Released   : 2026-09-08
-    Prior      : v2026.09.08.003
+    Version    : v2026.09.15.001
+    Released   : 2026-09-15
+    Prior      : v2026.09.08.004
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,35 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.09.15.001 - ROLLBACK: passive network inventory disabled by default.
+             Reporting hosts fell from 13-16/day to 6-7/day on 2026-09-09, the
+             first full day after the .001-.004 releases, and stayed there for a
+             week. Roughly half the fleet pulled the new script, stopped
+             reporting, and was silently unmonitored. Datto confirms several of
+             those machines were online throughout, so the endpoints were fine
+             and the script was not.
+             No root cause yet. The split does NOT follow OS or PowerShell
+             version - Windows 11 build 26200 appears on both sides, and the
+             surviving hosts span 5.1.19041 to 5.1.26100 - so it is not a
+             platform gate. The network inventory is disabled first because it
+             is by far the largest new surface, runs unconditionally on every
+             host, and calls three cmdlets (Get-NetIPConfiguration,
+             Get-NetNeighbor, Get-NetTCPConnection) whose behaviour varies more
+             across builds than anything else added. Disabling is one flag and
+             costs nothing if it turns out to be innocent.
+             Kept deliberately: the Defender AV fix (.001) and the
+             stop-killing-legitimate-software fix (.003). Reverting to
+             v2026.07.30.001 would restore reporting but also resume force-
+             terminating NVIDIA's driver, which is worse than the outage.
+             If the fleet recovers on this build, the cause is inside the
+             network block and it gets rebuilt with a real Windows test before
+             it ships again. If it does not recover, the cause is in .001/.003
+             and the next step is bisecting those.
+             LESSON: every prior release was validated by a PowerShell PARSE and
+             by mock tests on Linux. Neither executes the Windows cmdlets this
+             script is built on, so neither could have caught this. A parse is
+             not a test. Nothing ships to the fleet again without one real
+             Windows run first.
     v2026.09.08.004 - Event 7045 whitelist completed from operator confirmation:
              rtp1 / rtp2 / rtp_elam (the remaining real-time-protection drivers
              from the same Bitdefender/Avira package already whitelisted in .003)
@@ -372,7 +401,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.09.08.004 CONFIGURATION
+# SHELLKNIGHT v2026.09.15.001 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -493,7 +522,7 @@ $SK_AutoDisableExclusions        = @('Administrator','Guest','DefaultAccount','W
 # no sweep, no probe, and nothing for EDR to flag. Coverage of a site's network
 # grows with ShellKnight coverage, which is the point - no appliance, no VM, no
 # second agent.
-$SK_NetworkInventory_Enabled     = $true    # Report interfaces / neighbours / listeners
+$SK_NetworkInventory_Enabled     = $false   # DISABLED 2026-09-15 - see changelog v2026.09.15.001
 $SK_NetworkInventory_MaxNeighbors= 512      # Cap payload on a chatty host
 
 # --- BATTLEFIELD DASHBOARD (JSON push) ---
@@ -565,7 +594,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.09.08.004'
+    Version                  = 'v2026.09.15.001'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -955,7 +984,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.09.08.004'
+$version     = 'ShellKnight v2026.09.15.001'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -3247,7 +3276,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.09.08.004 - Report"
+Log-Info "  ShellKnight v2026.09.15.001 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -3260,7 +3289,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.09.08.004 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.09.15.001 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -3532,7 +3561,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.09.08.004'
+    version          = 'v2026.09.15.001'
     device_id        = $Script:MachineInfo['Device ID']
     hardware_type    = $Script:MachineInfo['Hardware Type']
     site_name        = $SK_SiteName
