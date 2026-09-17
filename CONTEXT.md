@@ -45,3 +45,55 @@ The Battlefield FastAPI route that receives Run Reports from ShellKnight. Accept
 ### Phase 1
 
 The first milestone of Fortress AI development. Scope: ShellKnight POSTs Run Reports to Battlefield; Battlefield stores and displays them in the Fleet Grid. No reverse channel, no commands sent to endpoints, no persistent agent. Completion criteria: fleet data flowing into a live dashboard.
+
+### Finding Class
+
+The category a finding belongs to, assigned by Battlefield's finding catalog (`bf/findings.py`).
+Exactly one of:
+
+- **`VULN`** a weakness in configuration, patching, or exposure. This is the only class that
+  affects a score.
+- **`DETECTION`** something observed that warrants human triage, such as a service install or a
+  remote-access tool found outside Program Files. A detection is reported but never scored,
+  because it may be legitimate.
+- **`OPERATIONAL`** housekeeping with no direct security consequence, such as stale profiles or
+  oversized files.
+
+A Finding Class is a property of the finding *type*, not of the host it was found on.
+
+### Device Security Score
+
+The per-device score ShellKnight computes during a Run, 0 to 100, published on the Fleet Grid as
+a letter grade. Scoped to one machine and one Run. It is NOT the number the customer sees in a
+report; that is the Tenant Security Score.
+
+### Tenant Security Score
+
+The single customer-level number, 0 to 100 internally, presented to the customer as a letter
+grade plus a Security GPA. Computed as the criticality-weighted mean of the Device Security
+Scores of a Tenant's devices, counting `VULN`-class findings only. One Tenant has exactly one
+Tenant Security Score at any point in time. See
+[ADR 0009](docs/adr/0009-customer-facing-security-score.md).
+
+### Security GPA
+
+The Tenant Security Score expressed on a 0.0 to 4.0 scale, the way a school grade point average
+reads. Presentation only. It is derived from the 0 to 100 score and is never the value stored or
+computed against.
+
+**Example:** a Tenant Security Score of 80 publishes as "B (3.2)".
+
+### Criticality Tier
+
+How much a device's score weighs in its Tenant's roll-up: Critical (3), Important (2), Standard
+(1). Battlefield derives a default tier from the Run Report on ingest, an operator may override
+it, and the override is sticky under the same manual-wins rule
+[ADR 0006](docs/adr/0006-device-identity-and-site-assignment.md) applies to site assignment.
+Criticality describes what a machine is worth to the business, NOT how bad its findings are.
+
+### Scorecard
+
+The short, recurring, customer-facing document: posture grade, distribution, and trend over time,
+with no findings detail and no hostnames. Distinct from the Assessment Report, which carries
+per-finding impact, evidence, remediation, and compliance mapping. A customer receives the
+Scorecard on a recurring cadence; the Assessment Report is produced per engagement.
