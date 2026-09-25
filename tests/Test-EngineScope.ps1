@@ -18,7 +18,8 @@
     was disabled, or a 'net accounts' with no length, was therefore scored -20
     and reported as the High finding 'Password minimum length is 0 (CIS
     1.1.1)', which Battlefield alerts on. An unknown length must cost nothing
-    and raise nothing (ADR 0009).
+    and raise nothing (ADR 0009), and the payload's password_min_length must
+    say null for it, not 0.
 
     This runs the whole of Phase 2, the CIS Benchmark block, the security
     scoring, and the payload's machine fields, all verbatim from
@@ -60,8 +61,8 @@ $cis       = Get-Section "(?ms)^    Invoke-SafeBlock -Label 'CIS Benchmark' -Blo
 $scoring   = Get-Section ('(?ms)^\$Script:SecurityScore = 100\s*$.*?' +
                           '^\$Script:SecurityScore = \[math\]::Max\(0, \$Script:SecurityScore\)') 'Security scoring'
 # The payload's machine fields, evaluated as a hashtable of their own.
-$fields    = [regex]::Matches($source, '(?m)^    (bitlocker|os_eol|antivirus|edr|defender)\s+=.*$')
-if ($fields.Count -ne 5) { throw "expected 5 payload fields (bitlocker, os_eol, antivirus, edr, defender), found $($fields.Count)" }
+$fields    = [regex]::Matches($source, '(?m)^    (bitlocker|os_eol|antivirus|edr|defender|password_min_length)\s+=.*$')
+if ($fields.Count -ne 6) { throw "expected 6 payload fields (bitlocker, os_eol, antivirus, edr, defender, password_min_length), found $($fields.Count)" }
 $payloadSrc = "[ordered]@{`n" + (($fields | ForEach-Object { $_.Value }) -join "`n") + "`n}"
 
 # --- Mocks. Functions take precedence over cmdlets of the same name. ---------
@@ -191,12 +192,13 @@ Invoke-Expression $biosDate
 # Penalty: points the five rules under test must take off 100 (AV -25, OS EOL
 # -20, BitLocker -15, Windows Update -15, password length -20/-10/-5). $null
 # for Av/Edr/Def means the engine did not run, so the payload has no value to
-# report. Pw is the CIS 1.1.1 finding's title, or $null for none.
+# report. Pw is the CIS 1.1.1 finding's title, or $null for none. Len is the
+# payload's password_min_length: the length read, or $null when it was not.
 $healthy = @{ Engine = 'runs'; Caption = 'Microsoft Windows 11 Pro'; Build = '22631'; BitLocker = 'On'; WuDays = 6
               AvList = @('Windows Defender'); Defender = 'active'; Services = @(); Net = 'ok'; PwLen = 14 }
 function New-Scenario([string]$Name, [hashtable]$Machine, [hashtable]$Expect) {
     $m = $healthy.Clone(); foreach ($k in $Machine.Keys) { $m[$k] = $Machine[$k] }
-    $e = @{ Av = 'Windows Defender'; Edr = 'None detected'; Def = 'Active'; Penalty = 0; Finding = $false; Pw = $null }
+    $e = @{ Av = 'Windows Defender'; Edr = 'None detected'; Def = 'Active'; Penalty = 0; Finding = $false; Pw = $null; Len = 14 }
     foreach ($k in $Expect.Keys) { $e[$k] = $Expect[$k] }
     $m.Name = $Name; $m.Expect = $e; $m
 }
@@ -218,18 +220,19 @@ $scenarios = @(
     New-Scenario 'defender-off-no-av'    @{ Defender = 'off' }                 @{ Av = 'Windows Defender (status DISABLED)'; Def = 'DISABLED'; Penalty = 25 }
     # A password length that was read is scored and reported as before. A real
     # 0 keeps the exact title Battlefield maps to 'password-policy-blank'.
-    New-Scenario 'password-length-0'     @{ PwLen = 0 }                        @{ Penalty = 20; Pw = 'Password minimum length is 0 (CIS 1.1.1)' }
-    New-Scenario 'password-length-6'     @{ PwLen = 6 }                        @{ Penalty = 10; Pw = 'Password minimum length is 6 (CIS 1.1.1)' }
-    New-Scenario 'password-length-10'    @{ PwLen = 10 }                       @{ Penalty = 5 }
-    # One that was not read is unknown: no penalty, no finding (ADR 0009).
-    New-Scenario 'net-accounts-empty'    @{ Net = 'empty' }                    @{}
-    New-Scenario 'net-accounts-no-length' @{ Net = 'no-length-line' }          @{}
+    New-Scenario 'password-length-0'     @{ PwLen = 0 }                        @{ Penalty = 20; Pw = 'Password minimum length is 0 (CIS 1.1.1)'; Len = 0 }
+    New-Scenario 'password-length-6'     @{ PwLen = 6 }                        @{ Penalty = 10; Pw = 'Password minimum length is 6 (CIS 1.1.1)'; Len = 6 }
+    New-Scenario 'password-length-10'    @{ PwLen = 10 }                       @{ Penalty = 5; Len = 10 }
+    # One that was not read is unknown: no penalty, no finding, null in the
+    # payload (ADR 0009).
+    New-Scenario 'net-accounts-empty'    @{ Net = 'empty' }                    @{ Len = $null }
+    New-Scenario 'net-accounts-no-length' @{ Net = 'no-length-line' }          @{ Len = $null }
     # A length line with no number: [int]'' is 0, so this must not parse as 0.
-    New-Scenario 'net-accounts-no-number' @{ PwLen = '' }                      @{}
+    New-Scenario 'net-accounts-no-number' @{ PwLen = '' }                      @{ Len = $null }
     # The engine produced nothing, so none of the five rules may fire, though
     # the machine has every problem they look for.
-    New-Scenario 'engine-aborts'         @{ Engine = 'aborts'; BitLocker = 'Off'; WuDays = 45; PwLen = 0 } @{ Av = $null; Edr = $null; Def = $null }
-    New-Scenario 'engine-disabled'       @{ Engine = 'disabled'; BitLocker = 'Off'; WuDays = 45; PwLen = 0 } @{ Av = $null; Edr = $null; Def = $null }
+    New-Scenario 'engine-aborts'         @{ Engine = 'aborts'; BitLocker = 'Off'; WuDays = 45; PwLen = 0 } @{ Av = $null; Edr = $null; Def = $null; Len = $null }
+    New-Scenario 'engine-disabled'       @{ Engine = 'disabled'; BitLocker = 'Off'; WuDays = 45; PwLen = 0 } @{ Av = $null; Edr = $null; Def = $null; Len = $null }
 )
 
 $failures = 0
@@ -296,8 +299,13 @@ foreach ($sc in $scenarios) {
     $pw = if ($pwFindings.Count) { ($pwFindings | ForEach-Object { $_.Title }) -join ' | ' } else { $null }
     if ($pw -ne $x.Pw -or ($null -eq $pw) -ne ($null -eq $x.Pw)) { Fail $label "CIS 1.1.1 finding = $(Show $pw), expected $(Show $x.Pw)" }
 
+    # As Battlefield receives it: a JSON number when read, null when not.
+    $lenJson  = @{ password_min_length = $payload['password_min_length'] } | ConvertTo-Json -Compress
+    $wantJson = if ($null -eq $x.Len) { '{"password_min_length":null}' } else { "{`"password_min_length`":$($x.Len)}" }
+    if ($lenJson -ne $wantJson) { Fail $label "payload $lenJson, expected $wantJson" }
+
     if ($failures -eq $before) {
-        Say "  ok    $label  -  score $($Script:SecurityScore); antivirus=$(Show $payload['antivirus']) edr=$(Show $payload['edr']) defender=$(Show $payload['defender']) password length=$(Show $Script:MinPasswordLen)" Green
+        Say "  ok    $label  -  score $($Script:SecurityScore); antivirus=$(Show $payload['antivirus']) edr=$(Show $payload['edr']) defender=$(Show $payload['defender']) password_min_length=$(Show $payload['password_min_length'])" Green
     }
 }
 

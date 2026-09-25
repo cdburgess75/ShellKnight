@@ -45,6 +45,9 @@
              the scoring and CIS 1.1.1 skip it when $null, and the log says
              the length is unknown. A length that was read, including a real
              0, is scored and reported exactly as before.
+             New payload field password_min_length: the length as a number,
+             or null when it was not read, so Battlefield can tell "unknown"
+             from "8 or more" (neither sends a finding).
     v2026.09.25.001 - Assessment Engine results now reach the report and the
              score. Invoke-SafeBlock runs its block as a child scope
              (& $Block). The engine set $avProduct, $edrProduct, $defStatus,
@@ -3704,6 +3707,7 @@ $jsonData = [ordered]@{
     defender         = $Script:MachineInfo['Defender']
     defender_sigs    = $Script:MachineInfo['Defender Sigs']
     last_wu_install  = $Script:MachineInfo['Last WU Install']
+    password_min_length = $Script:MinPasswordLen    # null when not read, never a stand-in 0
     domain           = $Script:MachineInfo['Domain/Workgroup']
     security_score   = $Script:SecurityScore
     security_grade   = $secGrade
