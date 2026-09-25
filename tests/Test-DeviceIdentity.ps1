@@ -53,6 +53,7 @@ $Script:Config    = [pscustomobject]@{ AssessmentEngine_Enabled = $true }
 $Script:Counters  = @{ IntelSource = 'test' }
 $Script:HWInfo    = @{ IsServer = $false }
 $Script:PSFullVer = '5.1.22621.5697'
+$origComputerName = $env:COMPUTERNAME     # process-wide: restored at the end
 $env:COMPUTERNAME = 'SK-TEST-PC'
 
 $Script:Uuid        = '12345678-ABCD-4EF0-9876-0123456789AB'
@@ -63,7 +64,7 @@ function Get-CimInstance {
     $s = $Script:Scenario
     switch ($ClassName) {
         'Win32_OperatingSystem' {
-            if ($s -eq 'engine-aborts') { throw 'Invalid class (WMI repository damaged)' }
+            if ($s -in 'engine-aborts', 'wmi-down') { throw 'Invalid class (WMI repository damaged)' }
             return [pscustomobject]@{ Caption = 'Microsoft Windows 11 Pro'; BuildNumber = '22621'
                                       OSArchitecture = '64-bit'; LastBootUpTime = (Get-Date).AddDays(-2) }
         }
@@ -85,7 +86,7 @@ function Get-CimInstance {
                                       AntivirusSignatureLastUpdated = $sig }
         }
         'Win32_ComputerSystemProduct' {
-            if ($s -in 'no-uuid', 'no-uuid-no-guid') { throw 'Generic failure' }
+            if ($s -in 'no-uuid', 'no-uuid-no-guid', 'wmi-down') { throw 'Generic failure' }
             if ($s -eq 'zero-uuid') { return [pscustomobject]@{ UUID = '00000000-0000-0000-0000-000000000000' } }
             return [pscustomobject]@{ UUID = $Script:Uuid }
         }
@@ -153,6 +154,9 @@ $scenarios = @(
     @{ Name = 'zero-uuid';        Id = $Script:MachineGuid; EngineRuns = $true;  Sigs = 'date';    Wu = 'date' }
     @{ Name = 'no-uuid';          Id = $Script:MachineGuid; EngineRuns = $true;  Sigs = 'date';    Wu = 'date' }
     @{ Name = 'no-uuid-no-guid';  Id = 'host:SK-TEST-PC';   EngineRuns = $true;  Sigs = 'date';    Wu = 'date' }
+    # WMI down: the old in-engine code never reached MachineGuid here, so the
+    # id must stay host:<name> rather than re-enroll under a new id.
+    @{ Name = 'wmi-down';         Id = 'host:SK-TEST-PC';   EngineRuns = $false }
 )
 
 $failures = 0
@@ -194,7 +198,7 @@ foreach ($sc in $scenarios) {
                 if (-not $ok) { Fail $label "'$($pair[0])' = '$v', expected $($pair[1])" }
             }
         }
-    } elseif ($sc.Name -eq 'engine-aborts' -and -not $skipped.Count) {
+    } elseif ($sc.Name -in 'engine-aborts', 'wmi-down' -and -not $skipped.Count) {
         Fail $label 'expected the engine to abort in this scenario (test harness check)'
     }
 
@@ -216,6 +220,8 @@ if (-not $post.Success) {
           $post.Value -notmatch [regex]::Escape("-ContentType 'application/json; charset=utf-8'")) {
     Fail 'POST' 'report is not sent as UTF-8 bytes with charset=utf-8 (PS 5.1 would send ISO-8859-1)'
 } else { Write-Host '  ok    POST  -  UTF-8 byte[] body, charset=utf-8' -ForegroundColor Green }
+
+$env:COMPUTERNAME = $origComputerName
 
 Write-Host ''
 if ($failures -gt 0) {
