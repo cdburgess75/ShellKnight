@@ -38,7 +38,8 @@
              read $Script:Config.IntelEngine_PrimarySource, which Config did
              not have. Under StrictMode 2 that threw before any download,
              cache write or IntelSource, so every device on every run
-             reported 'Hardcoded fallback' and 0 hash, filename and C2 IOCs.
+             reported 'Hardcoded fallback' and 0 hash, filename and C2 IOCs,
+             and the detection engines ran on their hard-coded lists only.
              The property is now in Config. The parser kept whole lines
              ('hash;comment', 'regex;score'), which no hash or file name
              could ever equal. ConvertFrom-IntelFeed now keeps the SHA256,
@@ -46,24 +47,30 @@
              false-positive regex. A filename IOC is a case-sensitive regex
              searched for in a full path, as LOKI applies it
              (Find-IntelFilenameMatch). Only those scored 60 or more load
-             (SK_IntelEngine_MinFilenameScore, LOKI's warning level).
-             Downloads use -UseBasicParsing (5.1's IE engine fails under
-             SYSTEM). A list over 5 MB, or with under 100 or over 20,000
-             usable entries, is not used, and the cache is replaced only
-             when every list has entries.
-             REPORT-ONLY. An intel match (Add-IntelHit) is logged, counted in
-             the new payload field intel_hits, and the first 20 become Low
-             findings 'Intel match (report-only): ...'. It is never an IOC:
-             not in ioc_alerts or the score, no exit code 2, no Battlefield
-             alert, and nothing is killed or removed. As written, a feed match
-             would have killed a process outside Program Files and Windows,
-             removed a Run value, deleted a startup shortcut, or deleted a
-             file in a redirected folder. Hard-coded lists act as before.
-             Hosts-file C2 matching is by whole name, not substring, and a C2
-             name pointed at 0.0.0.0 or loopback is a block, not a match.
-             Filename checks are capped at 3,000 paths per run
-             (intel_paths_skipped). Runtime grows by the Phase 1 download
-             (about 0.65 MB, weekly) and a few seconds of matching.
+             (SK_IntelEngine_MinFilenameScore, LOKI's warning level). C2
+             names match whole labels and subdomains (Find-IntelC2Match).
+             REPORT-ONLY. With the parser fixed, a feed match would have
+             killed a process, removed a Run value, or deleted a startup
+             shortcut or a redirected-folder file, and each would have been
+             an IOC (-15, exit code 2, a Critical alert in Battlefield). Now
+             every intel match goes through Add-IntelHit. It is logged and
+             counted, and the first 50 go into the new payload object
+             'intel' with what a hard-coded match there would do, and the
+             file's SHA256 and signer. The first 20 become Low findings
+             'Intel match (report-only): ...'. It is not an IOC, and nothing
+             is killed or removed. Hard-coded lists act as before.
+             Guards against a bad upstream list:
+               - a list over 5 MB, or with under 100 or over 20,000 usable
+                 entries, is not used;
+               - entries matching known-good values are left out: a regex
+                 matching a core Windows binary, the empty-file SHA256, or a
+                 top domain;
+               - a regex that times out is switched off;
+               - matching is capped at 3,000 paths and 30 s a run.
+             The cache is trusted only if SYSTEM or Administrators own it and
+             every list still parses to 100 entries or more. It is replaced
+             only after all three lists download. Downloads use
+             -UseBasicParsing (5.1's IE engine fails under SYSTEM).
     v2026.09.25.003 - OS end of life is Microsoft's date for the build AND the
              edition. The engine looked it up by build number only, one date
              per build, and several were years late: 19045 (Windows 10 22H2)
@@ -543,10 +550,9 @@ $SK_IntelEngine_CheckForUpdates  = $true    # Check remote before downloading (s
 $SK_IntelEngine_CacheDir         = 'C:\ProgramData\ShellKnight\Intel\'
 $SK_IntelEngine_PrimarySource    = 'Neo23x0'  # Primary IOC source (future: add more)
 $SK_IntelEngine_CacheAgeDays     = 7        # Force refresh cache after this many days
-$SK_IntelEngine_MinFilenameScore = 60       # Load filename IOCs scored at least this (LOKI's warning level)
-                                            # Below 60 a single match is only a LOKI "notice"; no single
-                                            # filename IOC reaches LOKI's alert level (100). Every intel
-                                            # match is REPORT-ONLY - see changelog v2026.09.25.004.
+$SK_IntelEngine_MinFilenameScore = 60       # Load filename IOCs scored at least this: LOKI's warning
+                                            # level (below it a match is only a LOKI "notice"). Every
+                                            # intel match is REPORT-ONLY - see changelog v2026.09.25.004.
 
 # --- ASSESSMENT ENGINE (Phase 2) ---
 # Establishes machine baseline including hardware, OS, uptime, domain membership,
@@ -824,12 +830,20 @@ $Script:HashIOCs     = (New-Object 'System.Collections.Generic.HashSet[string]' 
 $Script:FilenameIOCs = (New-Object 'System.Collections.Generic.List[object]')
 $Script:C2IOCs       = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
 # Find-IntelFilenameMatch runs every loaded filename regex against each path,
-# about 2,200 of them at the default score, so paths checked per run are capped.
-$Script:IntelPathBudget   = 3000
-$Script:IntelPathsChecked = 0
-$Script:IntelPathsSkipped = 0
-$Script:IntelMatchClock   = New-Object System.Diagnostics.Stopwatch
-$Script:IntelFindingCap   = 20       # Add-IntelHit: findings past this are in the log only
+# about 2,200 of them at the default score, so matching is capped per run by
+# paths and by time.
+$Script:IntelPathBudget    = 3000
+$Script:IntelTimeBudget    = 30      # seconds of filename matching per run
+$Script:IntelPathsChecked  = 0
+$Script:IntelPathsSkipped  = 0
+$Script:IntelRegexTimeouts = 0
+$Script:IntelMatchClock    = New-Object System.Diagnostics.Stopwatch
+$Script:IntelListDate      = $null   # when the loaded lists were downloaded
+# Add-IntelHit: findings past IntelFindingCap are in the log only; the payload's
+# intel.matches holds the first IntelMatchCap in full.
+$Script:IntelFindingCap    = 20
+$Script:IntelMatchCap      = 50
+$Script:IntelMatches       = (New-Object 'System.Collections.Generic.List[object]')
 $Script:FolderIOCs   = (New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase))
 
 # Single-query caches - populated once, reused across all engines
@@ -1240,23 +1254,50 @@ function ConvertFrom-IntelFeed {
 function Find-IntelFilenameMatch {
     param([string]$Path)
     if (-not $Path -or $Script:FilenameIOCs.Count -eq 0) { return $null }
-    if ($Script:IntelPathsChecked -ge $Script:IntelPathBudget) { $Script:IntelPathsSkipped++; return $null }
+    if ($Script:IntelPathsChecked -ge $Script:IntelPathBudget -or
+        $Script:IntelMatchClock.Elapsed.TotalSeconds -ge $Script:IntelTimeBudget) { $Script:IntelPathsSkipped++; return $null }
     $Script:IntelPathsChecked++
     $Script:IntelMatchClock.Start()
     try {
         foreach ($ioc in $Script:FilenameIOCs) {
-            # A regex that times out (runaway backtracking) counts as no match.
+            if ($ioc.Off) { continue }
             try {
                 if ($ioc.Regex.IsMatch($Path) -and -not ($ioc.Exclude -and $ioc.Exclude.IsMatch($Path))) { return $ioc }
-            } catch { }
+            } catch {
+                # Timed out (runaway backtracking): no match, and off for the rest
+                # of the run, so one bad upstream line cannot cost 250 ms a path.
+                $ioc.Off = $true
+                $Script:IntelRegexTimeouts++
+            }
         }
     } finally { $Script:IntelMatchClock.Stop() }
     return $null
 }
 
+# The C2 indicator a host name or address matches, or $null. A listed domain
+# also matches its subdomains ('evil.example' matches 'x.evil.example'; LOKI
+# tests C2 domains as substrings), whole labels only: 'earn.fm' is listed and
+# 'learn.fm' is not a match. An address matches only itself.
+function Find-IntelC2Match {
+    param([string]$Name)
+    if (-not $Name -or $Script:C2IOCs.Count -eq 0) { return $null }
+    $n = $Name.Trim().ToLowerInvariant().TrimEnd('.')
+    if (-not $n) { return $null }
+    if ($Script:C2IOCs.Contains($n)) { return $n }
+    if ($n -match '^[\d.]+$' -or $n.Contains(':')) { return $null }
+    $labels = $n.Split('.')
+    for ($i = 1; $i -lt $labels.Count - 1; $i++) {
+        $parent = [string]::Join('.', $labels[$i..($labels.Count - 1)])
+        if ($Script:C2IOCs.Contains($parent)) { return $parent }
+    }
+    return $null
+}
+
 # REPORT-ONLY. Every threat-intel match comes here and goes nowhere else. It is
-# logged and counted, and the first $Script:IntelFindingCap become Low
-# findings. It is never an IOC:
+# logged and counted, the first $Script:IntelFindingCap become Low findings,
+# and the first $Script:IntelMatchCap go to the payload's intel.matches with
+# the evidence needed to judge them (SHA256 and signer of a matched file). It
+# is never an IOC:
 #   - not in IOCsFound, which costs 15 points each, sets exit code 2 and shows
 #     the 'Action Required' banner;
 #   - never a High finding or an 'IOC:' title, which Battlefield alerts on;
@@ -1264,18 +1305,40 @@ function Find-IntelFilenameMatch {
 # The Intel Engine loaded nothing from v1.002 to v2026.09.25.003, so no intel
 # match has ever been seen in the field. They stay report-only until a
 # release's worth has been reviewed. $WouldHave says what the consumer does to
-# a match from its own hard-coded list, so the log shows what acting would do.
+# a match from its own hard-coded list, so the data shows what acting would do.
 function Add-IntelHit {
-    param([string]$Kind, [string]$Where, [string]$Indicator, [string]$WouldHave)
+    param([string]$Kind, [string]$Source, [string]$Target, [string]$Indicator, $Score = $null,
+          [string]$WouldHave, [string]$File)
     $Script:Counters.IntelHits++
-    $note = if ($WouldHave) { "report-only; a hard-coded match here $WouldHave" } else { 'report-only' }
-    Log-Warn "Intel $Kind match ($note): $Where  -  indicator: $Indicator"
+    $note  = if ($WouldHave) { "report-only; a hard-coded match here $WouldHave" } else { 'report-only' }
+    $scoreNote = if ($null -ne $Score) { " (score $Score)" } else { '' }   # not "$score": that IS $Score
+    Log-Warn "Intel $Kind match in $Source ($note): $Target  -  indicator: $Indicator$scoreNote"
+    if ($Script:IntelMatches.Count -lt $Script:IntelMatchCap) {
+        $sha = $null; $sigStatus = $null; $signer = $null
+        if ($File -and (Test-Path -LiteralPath $File -PathType Leaf)) {
+            try {
+                if ((Get-Item -LiteralPath $File -Force -ErrorAction Stop).Length -le 100MB) {
+                    $sha = (Get-FileHash -LiteralPath $File -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+                }
+            } catch { }
+            try {
+                $sig = Get-AuthenticodeSignature -LiteralPath $File -ErrorAction Stop
+                $sigStatus = "$($sig.Status)"
+                if ($sig.SignerCertificate) { $signer = $sig.SignerCertificate.Subject }
+            } catch { }
+        }
+        $Script:IntelMatches.Add([ordered]@{
+            kind = $Kind; source = $Source; target = $Target; indicator = $Indicator; score = $Score
+            would_have = $(if ($WouldHave) { $WouldHave } else { $null })
+            sha256 = $sha; signature = $sigStatus; signer = $signer
+        })
+    }
     if ($Script:Counters.IntelHits -le $Script:IntelFindingCap) {
-        Add-Finding -Severity Low -Title "Intel match (report-only): $Kind - $Where" `
-            -Action "Matched threat-intel indicator $Indicator. Not acted on: intel matches are report-only until reviewed. A single match is weak evidence; triage before acting."
+        Add-Finding -Severity Low -Title "Intel match (report-only): $Kind in $Source - $Target" `
+            -Action "Matched threat-intel indicator $Indicator$scoreNote. Not acted on: intel matches are report-only until reviewed. A single match is weak evidence; triage before acting."
     } elseif ($Script:Counters.IntelHits -eq $Script:IntelFindingCap + 1) {
         Add-Finding -Severity Low -Title "Intel match (report-only): more than $($Script:IntelFindingCap) matches" `
-            -Action 'The rest are in the run log only (lines starting "Intel").'
+            -Action 'The first 50 are in the report''s intel.matches; all are in the run log (lines starting "Intel").'
     }
 }
 
@@ -1422,23 +1485,44 @@ if ($Script:Config.IntelEngine_Enabled) {
         $minEntries = 100
         $maxEntries = 20000
 
-        # The cached lists. They are read back through ConvertFrom-IntelFeed
-        # below, so a cache in the old whole-line format loads correctly too.
+        # The cache, if it can be trusted. Only one owned by SYSTEM or
+        # Administrators: ProgramData lets any local user create a file here and
+        # then own it, which would let them choose the intel SYSTEM loads, so
+        # any other is deleted. And only one whose three lists each still parse
+        # to $minEntries or more (ConvertFrom-IntelFeed, so the old whole-line
+        # format reads correctly): an empty, truncated or corrupt cache would
+        # otherwise pass for current for CacheAgeDays.
         $intel     = @{ Filename = @(); Hashes = @(); C2 = @() }
         $cacheDate = $null
         if (Test-Path -LiteralPath $cacheFile) {
-            try {
-                $cache = Get-Content -LiteralPath $cacheFile -Raw -ErrorAction Stop | ConvertFrom-Json
-                foreach ($k in @('Filename', 'Hashes', 'C2')) {
-                    if ($cache.PSObject.Properties[$k] -and $cache.$k) { $intel[$k] = @($cache.$k) }
-                }
-                $cacheDate = (Get-Item -LiteralPath $cacheFile).LastWriteTime
-            } catch { Log-Warn "Intel Engine  -  cache unreadable, ignoring it: $($_.Exception.Message)" }
+            $owner = try { (Get-Acl -LiteralPath $cacheFile -ErrorAction Stop).GetOwner([System.Security.Principal.SecurityIdentifier]).Value } catch { $null }
+            if ($owner -notin @('S-1-5-18', 'S-1-5-32-544')) {
+                Log-Warn "Intel Engine  -  cache owned by $(if ($owner) { $owner } else { 'an unknown account' }), not SYSTEM or Administrators: deleting it"
+                Remove-Item -LiteralPath $cacheFile -Force -ErrorAction SilentlyContinue
+            } else {
+                try {
+                    $cache = Get-Content -LiteralPath $cacheFile -Raw -ErrorAction Stop | ConvertFrom-Json
+                    $cached = @{ Filename = @(); Hashes = @(); C2 = @() }
+                    foreach ($source in $sources) {
+                        $k = $source.Kind
+                        if ($cache -and $cache.PSObject.Properties[$k]) { $cached[$k] = ConvertFrom-IntelFeed -Kind $k -Lines @($cache.$k) }
+                    }
+                    $short = @($sources | Where-Object { @($cached[$_.Kind]).Count -lt $minEntries } | ForEach-Object { $_.Name })
+                    if ($short.Count) { throw "too few usable entries in: $($short -join ', ')" }
+                    $intel     = $cached
+                    $cacheDate = (Get-Item -LiteralPath $cacheFile).LastWriteTime
+                    # 5.1 keeps the ISO string; PowerShell 7 parses it to a DateTime.
+                    $updated = if ($cache.PSObject.Properties['Updated']) { $cache.Updated } else { $cacheDate }
+                    $Script:IntelListDate = if ($updated -is [datetime]) { $updated.ToString('o') } else { [string]$updated }
+                } catch { Log-Warn "Intel Engine  -  cache not usable, ignoring it: $($_.Exception.Message)" }
+            }
         }
 
         $useCache = $false
         if ($cacheDate) {
-            $cacheOld = ((Get-Date) - $cacheDate).TotalDays -gt $cacheAge
+            # A timestamp in the future is not current: nothing legitimate writes one.
+            $cacheDays = ((Get-Date) - $cacheDate).TotalDays
+            $cacheOld  = $cacheDays -gt $cacheAge -or $cacheDays -lt 0
 
             if (-not $cacheOld -and $Script:Config.IntelEngine_CheckUpdates) {
                 # HEAD check - only download if remote has changed.
@@ -1478,17 +1562,19 @@ if ($Script:Config.IntelEngine_Enabled) {
                 }
             }
 
-            # Replace the cache only when every list has entries, fresh or carried
-            # over. Writing an empty list would hide it for CacheAgeDays; left
-            # unwritten, the next run downloads again.
-            $missing = @($sources | Where-Object { -not @($intel[$_.Kind]).Count } | ForEach-Object { $_.Name })
-            if ($fresh -and -not $missing.Count) {
-                @{ Filename = $intel.Filename; Hashes = $intel.Hashes; C2 = $intel.C2
-                   Updated  = (Get-Date).ToString('o'); Source = $Script:Config.IntelEngine_PrimarySource } |
-                    ConvertTo-Json -Compress | Set-Content -LiteralPath $cacheFile -Encoding UTF8 -Force
-                Log-Summary "Intel Engine  -  cache updated from Neo23x0"
+            # Replace the cache only when every list downloaded. After a partial
+            # download the old cache keeps its age, so the next run tries again
+            # and a list that keeps failing never passes for current.
+            if ($fresh -eq $sources.Count) {
+                try {
+                    $Script:IntelListDate = (Get-Date).ToString('o')
+                    @{ Filename = $intel.Filename; Hashes = $intel.Hashes; C2 = $intel.C2
+                       Updated  = $Script:IntelListDate; Source = $Script:Config.IntelEngine_PrimarySource } |
+                        ConvertTo-Json -Compress | Set-Content -LiteralPath $cacheFile -Encoding UTF8 -Force -ErrorAction Stop
+                    Log-Summary "Intel Engine  -  cache updated from Neo23x0"
+                } catch { Log-Warn "Intel Engine  -  cache not written: $($_.Exception.Message)" }
             } elseif ($fresh) {
-                Log-Warn "Intel Engine  -  cache not written, no copy of: $($missing -join ', ')"
+                $Script:IntelListDate = "$((Get-Date).ToString('o')) (partial)"
             }
             $Script:Counters.IntelSource = if ($fresh -eq $sources.Count) { 'Live (Neo23x0)' }
                                            elseif ($fresh) { "Live (Neo23x0, $fresh of $($sources.Count) lists)" }
@@ -1498,31 +1584,61 @@ if ($Script:Config.IntelEngine_Enabled) {
             $Script:Counters.IntelSource = 'Cache (current)'
         }
 
+        # Known good: an entry that matches one of these is over-broad or wrong,
+        # and is left out. No entry in the September 2026 lists does. It is the
+        # guard against an upstream line such as '.', '\\' or '(?i)c:', which
+        # would match every path on every device (and, once intel acts, act on
+        # every device at once). A filename regex that times out on these is
+        # left out too.
+        $goodPaths = @(
+            'C:\Windows\explorer.exe', 'C:\Windows\System32\svchost.exe', 'C:\Windows\System32\lsass.exe',
+            'C:\Windows\System32\services.exe', 'C:\Windows\System32\winlogon.exe', 'C:\Windows\System32\csrss.exe',
+            'C:\Windows\System32\taskhostw.exe', 'C:\Windows\System32\RuntimeBroker.exe', 'C:\Windows\System32\cmd.exe',
+            'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', 'C:\Windows\SysWOW64\rundll32.exe',
+            'C:\Windows\System32\drivers\etc\hosts', 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+            'C:\Program Files\Common Files\microsoft shared\ClickToRun\OfficeClickToRun.exe',
+            'C:\Program Files\WindowsApps\Microsoft.WindowsStore_22408.1401.3.0_x64__8wekyb3d8bbwe\WinStore.App.exe'
+        )
+        $goodHashes = @('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')   # the empty file
+        $goodC2 = @('microsoft.com', 'windows.com', 'windowsupdate.com', 'office.com', 'office365.com', 'live.com',
+                    'outlook.com', 'azure.com', 'msftconnecttest.com', 'google.com', 'gstatic.com', 'googleapis.com',
+                    'github.com', 'githubusercontent.com', 'apple.com', 'amazonaws.com', 'cloudflare.com',
+                    'akamaiedge.net', 'centrastage.net', 'datto.com', 'ptechllc.com',
+                    '0.0.0.0', '127.0.0.1', '8.8.8.8', '1.1.1.1')
+
         # Load into the runtime sets. Filename regexes are compiled once here,
-        # case-sensitive as LOKI applies them, with a match timeout. One below
-        # the minimum score, or that .NET cannot compile, is left out and counted.
-        foreach ($h in (ConvertFrom-IntelFeed -Kind Hashes -Lines $intel.Hashes)) { $null = $Script:HashIOCs.Add($h) }
-        foreach ($c in (ConvertFrom-IntelFeed -Kind C2 -Lines $intel.C2))         { $null = $Script:C2IOCs.Add($c) }
+        # case-sensitive as LOKI applies them, with a match timeout.
+        $knownGood = 0
+        foreach ($h in $intel.Hashes) { if ($goodHashes -contains $h) { $knownGood++ } else { $null = $Script:HashIOCs.Add($h) } }
+        foreach ($c in $intel.C2)     { if ($goodC2 -contains $c)     { $knownGood++ } else { $null = $Script:C2IOCs.Add($c) } }
         $rxOpts    = [System.Text.RegularExpressions.RegexOptions]::None
         $rxTimeout = [timespan]::FromMilliseconds(250)
         $lowScore  = 0
         $badRegex  = 0
-        foreach ($e in (ConvertFrom-IntelFeed -Kind Filename -Lines $intel.Filename)) {
+        $overBroad = 0
+        foreach ($e in $intel.Filename) {
             $f = $e.Split(';')
             if ([int]$f[1] -lt $Script:Config.IntelEngine_MinFilenameScore) { $lowScore++; continue }
             try {
                 $rx = New-Object System.Text.RegularExpressions.Regex -ArgumentList $f[0], $rxOpts, $rxTimeout
                 $fp = $null
                 if ($f.Count -ge 3) { $fp = New-Object System.Text.RegularExpressions.Regex -ArgumentList $f[2], $rxOpts, $rxTimeout }
-                $Script:FilenameIOCs.Add([pscustomobject]@{ Pattern = $f[0]; Score = [int]$f[1]; Regex = $rx; Exclude = $fp })
-            } catch { $badRegex++ }
+            } catch { $badRegex++; continue }
+            $broad = $false
+            foreach ($p in $goodPaths) {
+                try { if ($rx.IsMatch($p) -and -not ($fp -and $fp.IsMatch($p))) { $broad = $true; break } }
+                catch { $broad = $true; break }
+            }
+            if ($broad) { $overBroad++; continue }
+            $Script:FilenameIOCs.Add([pscustomobject]@{ Pattern = $f[0]; Score = [int]$f[1]; Regex = $rx; Exclude = $fp; Off = $false })
         }
         $Script:HashIOCsLoaded     = $Script:HashIOCs.Count
         $Script:FilenameIOCsLoaded = $Script:FilenameIOCs.Count
         $Script:C2IOCsLoaded       = $Script:C2IOCs.Count
         Log-Summary "Intel Engine  -  $($Script:HashIOCsLoaded) hash IOCs | $($Script:FilenameIOCsLoaded) filename IOCs | $($Script:C2IOCsLoaded) C2 IOCs loaded (matches are report-only)"
-        if ($lowScore -or $badRegex) {
-            Log-Info "Intel Engine  -  filename IOCs left out: $lowScore scored below $($Script:Config.IntelEngine_MinFilenameScore), $badRegex not valid .NET regex"
+        if ($lowScore -or $badRegex -or $overBroad -or $knownGood) {
+            Log-Info ("Intel Engine  -  left out: $lowScore filename IOCs scored below $($Script:Config.IntelEngine_MinFilenameScore), " +
+                      "$badRegex not valid .NET regex, $overBroad matching a known-good path; $knownGood known-good hashes or C2 entries")
         }
     }
 } else {
@@ -2141,8 +2257,12 @@ if ($Script:Config.ProcessEngine_Enabled) {
                 $Script:Counters.IOCsFound++
             } catch { Log-Fail "Could not kill process: $($proc.Name)  -  $($_.Exception.Message)" }
         } elseif ($procIntel) {
-            Add-IntelHit -Kind 'filename' -Where "process $($proc.Name) (PID $($proc.Id)) at $($procPathById[[int]$proc.Id])" `
-                -Indicator "$($procIntel.Pattern) (score $($procIntel.Score))" -WouldHave 'kills the process'
+            # What a hard-coded match here does: killed, unless it runs from a vendor path.
+            $procFile = $procPathById[[int]$proc.Id]
+            $inVendor = $legitProcRoots | Where-Object { $procFile.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) }
+            Add-IntelHit -Kind 'filename' -Source 'process' -Target "$procFile (PID $($proc.Id))" -File $procFile `
+                -Indicator $procIntel.Pattern -Score $procIntel.Score `
+                -WouldHave $(if ($inVendor) { 'is only reported (vendor path)' } else { 'kills the process' })
         } else {
             Log-Info "  [PROC] $($proc.Name) (PID: $($proc.Id)) CPU: $([math]::Round($proc.CPU,1))s"
         }
@@ -2294,8 +2414,8 @@ if ($Script:Config.PersistenceEngine_Enabled) {
                     $Script:Counters.IOCsFound++
                     $Script:RunKeysFound++
                 } elseif ($runIntel) {
-                    Add-IntelHit -Kind 'filename' -Where "Run value $keyPath\$name = $val" `
-                        -Indicator "$($runIntel.Pattern) (score $($runIntel.Score))" -WouldHave 'removes the Run value'
+                    Add-IntelHit -Kind 'filename' -Source 'Run value' -Target "$keyPath\$name = $val" `
+                        -Indicator $runIntel.Pattern -Score $runIntel.Score -WouldHave 'removes the Run value'
                 } else {
                     Log-Info "  [RUN] $name = $val"
                 }
@@ -2339,8 +2459,8 @@ if ($Script:Config.PersistenceEngine_Enabled) {
                         $Script:Counters.RunKeysRemoved++
                         $Script:Counters.IOCsFound++
                     } elseif ($userRunIntel) {
-                        Add-IntelHit -Kind 'filename' -Where "Run value (user: $who) $keyPath\$name = $val" `
-                            -Indicator "$($userRunIntel.Pattern) (score $($userRunIntel.Score))" -WouldHave 'removes the Run value'
+                        Add-IntelHit -Kind 'filename' -Source 'Run value' -Target "$keyPath\$name = $val (user: $who)" `
+                            -Indicator $userRunIntel.Pattern -Score $userRunIntel.Score -WouldHave 'removes the Run value'
                     } else {
                         Log-Info "  [RUN:$who] $name = $val"
                     }
@@ -2375,8 +2495,8 @@ if ($Script:Config.PersistenceEngine_Enabled) {
                 $lnksRemoved++
                 $Script:Counters.IOCsFound++
             } elseif ($lnkIntel) {
-                Add-IntelHit -Kind 'filename' -Where "startup shortcut $($lnk.FullName)" `
-                    -Indicator "$($lnkIntel.Pattern) (score $($lnkIntel.Score))" -WouldHave 'deletes the shortcut'
+                Add-IntelHit -Kind 'filename' -Source 'startup shortcut' -Target $lnk.FullName -File $lnk.FullName `
+                    -Indicator $lnkIntel.Pattern -Score $lnkIntel.Score -WouldHave 'deletes the shortcut'
             } else {
                 Log-Info "  [LNK] $($lnk.Name)"
             }
@@ -2747,8 +2867,8 @@ if ($Script:Config.FilesystemEngine_Enabled) {
                                         # An intel feed match is reported, not deleted (Add-IntelHit).
                                         $rdIntel = Find-IntelFilenameMatch -Path $f.FullName
                                         if ($rdIntel) {
-                                            Add-IntelHit -Kind 'filename' -Where $f.FullName `
-                                                -Indicator "$($rdIntel.Pattern) (score $($rdIntel.Score))" -WouldHave 'deletes the file'
+                                            Add-IntelHit -Kind 'filename' -Source 'redirected folder' -Target $f.FullName -File $f.FullName `
+                                                -Indicator $rdIntel.Pattern -Score $rdIntel.Score -WouldHave 'deletes the file'
                                         }
                                     }
                                 }
@@ -2838,13 +2958,16 @@ if ($Script:Config.DetectionEngine_Enabled) {
     $userDirs = @(Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue |
                   Where-Object { $_.Name -notmatch '^(Public|Default|All Users)$' })
 
+    # Users' folders first: the intel filename check (capped per run) and the
+    # hash scan (first 100 files) are spent where downloads and droppers land,
+    # not on a C:\Windows\Temp that can hold thousands of files.
     $iocScanPaths = (New-Object 'System.Collections.Generic.List[string]')
-    @('C:\Users\Public','C:\Windows\Temp','C:\ProgramData') | ForEach-Object { $iocScanPaths.Add($_) }
     foreach ($ud in $userDirs) {
+        $iocScanPaths.Add((Join-Path $ud.FullName 'Downloads'))
         $iocScanPaths.Add((Join-Path $ud.FullName 'AppData\Local\Temp'))
         $iocScanPaths.Add((Join-Path $ud.FullName 'AppData\Roaming'))
-        $iocScanPaths.Add((Join-Path $ud.FullName 'Downloads'))
     }
+    @('C:\Users\Public','C:\ProgramData','C:\Windows\Temp') | ForEach-Object { $iocScanPaths.Add($_) }
 
     $trojanHits = 0
     foreach ($scanPath in $iocScanPaths) {
@@ -2863,7 +2986,8 @@ if ($Script:Config.DetectionEngine_Enabled) {
         foreach ($f in $files) {
             $fileIntel = Find-IntelFilenameMatch -Path $f.FullName
             if ($fileIntel) {
-                Add-IntelHit -Kind 'filename' -Where $f.FullName -Indicator "$($fileIntel.Pattern) (score $($fileIntel.Score))"
+                Add-IntelHit -Kind 'filename' -Source 'scanned file' -Target $f.FullName -File $f.FullName `
+                    -Indicator $fileIntel.Pattern -Score $fileIntel.Score
             }
         }
     }
@@ -2910,7 +3034,7 @@ if ($Script:Config.DetectionEngine_Enabled) {
                 try {
                     $hash = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256 -ErrorAction Stop).Hash.ToLower()
                     if ($Script:HashIOCs.Contains($hash)) {
-                        Add-IntelHit -Kind 'hash' -Where $f.FullName -Indicator "SHA256 $hash"
+                        Add-IntelHit -Kind 'hash' -Source 'scanned file' -Target $f.FullName -File $f.FullName -Indicator $hash
                         $mbHits++
                     }
                 } catch { }
@@ -2928,15 +3052,16 @@ if ($Script:Config.DetectionEngine_Enabled) {
         foreach ($line in $hostsLines) {
             $isWhitelisted = $Script:HostsWhitelist | Where-Object { $line -match $_ }
             if (-not $isWhitelisted -and $line -match '\S') {
-                # Whole names and addresses, not substrings: 'earn.fm' is on the C2
-                # list and 'learn.fm' must not match it. (Intel: report-only.)
-                $hostTokens = @(($line -replace '#.*$', '').Trim() -split '\s+' | ForEach-Object { $_.ToLowerInvariant().TrimEnd('.') })
-                $c2Names    = @($hostTokens | Where-Object { $_ -and $Script:C2IOCs.Contains($_) })
-                if ($c2Names.Count -and $hostTokens[0] -match '^(0\.0\.0\.0|127\.\d+\.\d+\.\d+|::1?)$') {
+                # Each address and name on the line, not the line as a substring:
+                # 'earn.fm' is on the C2 list and 'learn.fm' must not match it.
+                # Find-IntelC2Match also matches subdomains. (Intel: report-only.)
+                $hostTokens = @(($line -replace '#.*$', '').Trim() -split '\s+' | Where-Object { $_ })
+                $c2Names    = @($hostTokens | ForEach-Object { Find-IntelC2Match $_ } | Where-Object { $_ } | Select-Object -Unique)
+                if ($c2Names.Count -and $hostTokens[0] -match '^(0\.0\.0\.0|127\.\d+\.\d+\.\d+|::1?|0:0:0:0:0:0:0:[01])$') {
                     # A C2 name pointed at 0.0.0.0 or loopback is BLOCKED; blocklists add these.
                     Log-Info "Hosts file blocks C2 name(s) $($c2Names -join ', '): $line"
                 } elseif ($c2Names.Count) {
-                    Add-IntelHit -Kind 'C2' -Where "hosts file entry: $line" -Indicator ($c2Names -join ', ')
+                    Add-IntelHit -Kind 'C2' -Source 'hosts file' -Target $line -Indicator ($c2Names -join ', ')
                     $hostsHits++
                 } elseif ($line -notmatch '^127\.0\.0\.1\s+localhost' -and $line -notmatch '^::1') {
                     Log-Warn "Hosts file custom entry: $line"
@@ -3011,8 +3136,11 @@ if ($Script:Config.DetectionEngine_Enabled) {
         $dnsEntries = @(Get-DnsClientCache -ErrorAction SilentlyContinue)
         foreach ($entry in $dnsEntries) {
             $dnsName = $entry.Entry
-            if ($dnsName -and $Script:C2IOCs.Contains($dnsName.TrimEnd('.'))) {
-                Add-IntelHit -Kind 'C2' -Where "DNS cache: $dnsName resolved to $($entry.Data)" -Indicator $dnsName.TrimEnd('.')
+            # The name, or what it resolved to: a C2 address, or a CNAME to a C2 name.
+            $dnsC2 = Find-IntelC2Match $dnsName
+            if (-not $dnsC2) { $dnsC2 = Find-IntelC2Match ([string]$entry.Data) }
+            if ($dnsC2) {
+                Add-IntelHit -Kind 'C2' -Source 'DNS cache' -Target "$dnsName -> $($entry.Data)" -Indicator $dnsC2
                 $c2Hits++
             }
         }
@@ -3772,7 +3900,7 @@ Log-Info "  Filename IOCs loaded     $($Script:FilenameIOCsLoaded)"
 Log-Info "  C2 IOCs loaded           $($Script:C2IOCsLoaded)"
 Log-Info "  Intel source             $($Script:Counters.IntelSource)"
 Log-Info "  Intel matches            $($Script:Counters.IntelHits) (report-only: not IOC alerts, nothing acted on)"
-Log-Info "  Intel paths checked      $($Script:IntelPathsChecked) in $([math]::Round($Script:IntelMatchClock.Elapsed.TotalSeconds, 1)) s$(if ($Script:IntelPathsSkipped) { "; $($Script:IntelPathsSkipped) more over the cap of $($Script:IntelPathBudget), not checked" })"
+Log-Info "  Intel paths checked      $($Script:IntelPathsChecked) in $([math]::Round($Script:IntelMatchClock.Elapsed.TotalSeconds, 1)) s$(if ($Script:IntelPathsSkipped) { "; $($Script:IntelPathsSkipped) more over the cap ($($Script:IntelPathBudget) paths / $($Script:IntelTimeBudget) s), not checked" })$(if ($Script:IntelRegexTimeouts) { "; $($Script:IntelRegexTimeouts) regex(es) timed out and switched off" })"
 Log-Info "  Total actions taken      $($Script:Counters.ActionsTaken)"
 Log-Info "  Failed actions           $($Script:Counters.Failed)"
 Log-Info "  IOC alerts               $($Script:Counters.IOCsFound)"
@@ -4044,8 +4172,17 @@ $jsonData = [ordered]@{
     hash_iocs_loaded = $Script:HashIOCsLoaded
     filename_iocs    = $Script:FilenameIOCsLoaded
     c2_iocs          = $Script:C2IOCsLoaded
-    intel_hits       = $Script:Counters.IntelHits          # report-only matches, not in ioc_alerts
-    intel_paths_skipped = $Script:IntelPathsSkipped         # paths over the per-run cap, not checked
+    # Report-only intel matches (Add-IntelHit): never in ioc_alerts or the score.
+    intel            = [ordered]@{
+        hits               = $Script:Counters.IntelHits
+        matches            = @($Script:IntelMatches)     # the first 50, with evidence
+        paths_checked      = $Script:IntelPathsChecked
+        paths_skipped      = $Script:IntelPathsSkipped   # over the per-run cap, not checked
+        match_seconds      = [math]::Round($Script:IntelMatchClock.Elapsed.TotalSeconds, 1)
+        regex_timeouts     = $Script:IntelRegexTimeouts
+        list_date          = $Script:IntelListDate
+        min_filename_score = $Script:Config.IntelEngine_MinFilenameScore
+    }
     failed_actions   = $Script:Counters.Failed
     findings         = @($Script:Findings | ForEach-Object { [ordered]@{ severity = $_.Severity; title = $_.Title; action = $_.Action } })
     log_path         = $Script:LogPath

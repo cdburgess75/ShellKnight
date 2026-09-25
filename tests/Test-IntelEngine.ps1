@@ -14,8 +14,9 @@
 
     Loading intel for the first time turns on detections that have never run in
     the field, next to consumers that kill processes and delete Run values,
-    shortcuts and files. So an intel match is report-only: a Low finding and
-    the intel_hits count, never an IOC, never a kill or a removal.
+    shortcuts and files. So an intel match is report-only: counted, logged,
+    listed in the payload's intel object and (the first 20) a Low finding, but
+    never an IOC, never a kill or a removal.
 
     This runs Phase 1 verbatim from ShellKnight.ps1 under StrictMode 2, with
     Invoke-WebRequest mocked to serve lists in the real Neo23x0 formats, and
@@ -23,8 +24,8 @@
     consumer verbatim - the Process Engine's process loop, the Persistence
     Engine's Run keys and startup shortcuts, the redirected-folder scan and
     the Detection Engine's filename, hash, hosts file and DNS checks - against
-    mocked Windows cmdlets, and asserts what a match does. It does not replace
-    a real Windows run.
+    mocked Windows cmdlets, and asserts each match it reports and each action
+    it takes. It does not replace a real Windows run.
 
     It also parses the whole script and fails on any $Script:Config.<Name>
     that the Config literal does not define: the general form of the bug.
@@ -50,8 +51,8 @@ function Get-Section {
 $settings   = Get-Section '(?ms)^# --- INTEL ENGINE \(Phase 1\) ---.*?(?=^\$Script:ConfigPath)' 'the $SK_ settings'
 $configLit  = Get-Section '(?ms)^\$Script:Config = \[PSCustomObject\]@\{.*?^\}' 'the $Script:Config literal'
 $countersLit= Get-Section '(?ms)^\$Script:Counters = @\{.*?^\}' 'the $Script:Counters literal'
-$intelState = Get-Section '(?ms)^\$Script:HashIOCs     = .*?^\$Script:IntelFindingCap .*?$' 'the intel collections and state'
-$functions  = foreach ($fn in 'Invoke-SafeBlock', 'ConvertFrom-IntelFeed', 'Find-IntelFilenameMatch', 'Add-IntelHit', 'Log-IOC') {
+$intelState = Get-Section '(?ms)^\$Script:HashIOCs     = .*?^\$Script:IntelMatches\s+=[^\r\n]*' 'the intel collections and state'
+$functions  = foreach ($fn in 'Invoke-SafeBlock', 'ConvertFrom-IntelFeed', 'Find-IntelFilenameMatch', 'Find-IntelC2Match', 'Add-IntelHit', 'Log-IOC') {
     Get-Section "(?ms)^function $fn\s+\{.*?^\}" "function $fn"
 }
 $phase1     = Get-Section ('(?ms)^\$Script:HashIOCsLoaded    = 0.*?' +
@@ -88,6 +89,18 @@ function Invoke-WebRequest {
     if ($null -eq $Script:Web[$leaf]) { throw 'The remote server returned an error: (503) Server Unavailable.' }
     [pscustomobject]@{ Content = $Script:Web[$leaf]; Headers = @{} }
 }
+# The cache file's owner, as a SID. Get-Acl does not exist off Windows.
+$Script:CacheOwner = 'S-1-5-18'
+function Get-Acl {
+    param($LiteralPath, $ErrorAction)
+    $acl = [pscustomobject]@{}
+    $acl | Add-Member ScriptMethod GetOwner { param($Type) [pscustomobject]@{ Value = $Script:CacheOwner } }
+    $acl
+}
+function Get-AuthenticodeSignature {
+    param($LiteralPath, $ErrorAction)
+    [pscustomobject]@{ Status = 'Valid'; SignerCertificate = [pscustomobject]@{ Subject = 'CN=SKTEST Vendor' } }
+}
 
 foreach ($f in $functions) { Invoke-Expression $f }
 
@@ -107,14 +120,15 @@ function Fail([string]$Label, [string]$Why) {
 
 # --- Lists in the real Neo23x0 formats ---------------------------------------
 # Every kind of line the real files have (see each file's own header), plus
-# fillers so each list clears the engine's 100-entry sanity floor. The
-# indicators are made up; none is a real IOC.
+# fillers so each list clears the engine's 100-entry sanity floor, plus the
+# over-broad and known-good entries the engine must leave out. The indicators
+# are made up; none is a real IOC.
 $sha = [System.Security.Cryptography.SHA256]::Create()
 function Get-TestHash([string]$Seed) { -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Seed)) | ForEach-Object { $_.ToString('x2') }) }
 $hashEvil   = Get-TestHash 'sktest-hashed.dll'
 $hashUpper  = (Get-TestHash 'upper').ToUpper()
 $hashScored = Get-TestHash 'scored'
-$fillers = 1..120
+$hashEmpty  = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
 
 function New-Feed([string]$Kind, [string]$Nl = "`n", [int]$Fill = 120) {
     $lines = switch ($Kind) {
@@ -131,6 +145,8 @@ function New-Feed([string]$Kind, [string]$Nl = "`n", [int]$Fill = 120) {
             '\\Startup\\sktest-shortcut\.lnk;70'
             '/tmp/sktest-unix;80'                    # a Unix path: dropped
             '\\sktest-broken(\.exe;80'               # not a valid regex: left out, counted
+            '(?i)\\windows\\;90'                     # over-broad: matches known-good paths
+            '\\;70'                                  # over-broad: any backslash
             ''
             foreach ($i in 1..$Fill) { '\\sktest-filler-{0:d5}\.exe;60' -f $i }
         }
@@ -141,6 +157,7 @@ function New-Feed([string]$Kind, [string]$Nl = "`n", [int]$Fill = 120) {
             'd41d8cd98f00b204e9800998ecf8427e;an MD5, which the SHA256 scan cannot use'
             'da39a3ee5e6b4b0d3255bfef95601890afd80709;a SHA1, likewise'
             "$hashScored;55;Vulnerable library ./lib/sktest-1.0.jar"
+            "$hashEmpty;the empty file: known good"
             ''
             foreach ($i in 1..$Fill) { "$(Get-TestHash "filler$i");SKTEST filler $i" }
         }
@@ -152,6 +169,7 @@ function New-Feed([string]$Kind, [string]$Nl = "`n", [int]$Fill = 120) {
             '198.51.100.9;65'
             'Sktest-Upper.Example.'
             'not a domain'
+            'microsoft.com'                           # known good
             ''
             foreach ($i in 1..$Fill) { 'sktest-filler-{0:d5}.example' -f $i }
         }
@@ -161,18 +179,22 @@ function New-Feed([string]$Kind, [string]$Nl = "`n", [int]$Fill = 120) {
 $leaves = 'filename-iocs.txt', 'hash-iocs.txt', 'c2-iocs.txt'
 function Set-Web([string]$Nl = "`n") { foreach ($l in $leaves) { $Script:Web[$l] = New-Feed $l $Nl } }
 # Loaded from the feeds above: filename = 5 named at 70-80 + 120 fillers at 60
-# (the 45 is below the minimum, the broken one does not compile, the Unix one
-# is dropped); hashes = 3 SHA256 + 120 (MD5 and SHA1 dropped); C2 = 4 + 120.
+# (the 45 is below the minimum, the broken one does not compile, the two
+# over-broad ones match known-good paths, the Unix one is dropped); hashes = 3
+# SHA256 + 120 (MD5, SHA1 and the empty file left out); C2 = 4 + 120
+# (microsoft.com left out).
 $want = @{ Hash = 123; Filename = 125; C2 = 124 }
+$leftOut = 'left out: 1 filename IOCs scored below 60, 1 not valid \.NET regex, 2 matching a known-good path; 2 known-good hashes or C2 entries'
 
 # What the pre-v2026.09.25.004 parser would have cached: whole trimmed lines,
-# hashes and C2 lower-cased.
-function New-LegacyCache([string]$Path) {
+# hashes and C2 lower-cased. $Only keeps one list's key and empties the rest.
+function New-LegacyCache([string]$Path, [string]$Empty) {
     $old = @{}
     foreach ($pair in @(@('Filename', 'filename-iocs.txt', $false), @('Hashes', 'hash-iocs.txt', $true), @('C2', 'c2-iocs.txt', $true))) {
         $old[$pair[0]] = @((New-Feed $pair[1]) -split "`n" | Where-Object { $_ -and -not $_.StartsWith('#') } |
                            ForEach-Object { if ($pair[2]) { $_.Trim().ToLower() } else { $_.Trim() } })
     }
+    if ($Empty) { $old[$Empty] = @() }
     $old.Updated = (Get-Date).ToString('o'); $old.Source = 'Neo23x0'
     $old | ConvertTo-Json -Compress | Set-Content -LiteralPath $Path -Encoding UTF8
 }
@@ -182,7 +204,6 @@ function New-LegacyCache([string]$Path) {
 # finally below deletes. Everything after it uses the sets it loaded.
 $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('sk-intel-test-' + [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $tmpRoot
-
 try {
     Invoke-Expression $settings
     $SK_IntelEngine_CacheDir = $tmpRoot
@@ -195,13 +216,16 @@ try {
         $Script:Logged.Clear(); $Script:Findings.Clear(); $Script:WebCalls.Clear()
     }
     function Get-CacheStamp { if (Test-Path -LiteralPath $cacheFile) { (Get-Item -LiteralPath $cacheFile).LastWriteTimeUtc.Ticks } else { $null } }
-    # No cache to age means Phase 1 did not write one; the scenario's own
+    # No cache to date means Phase 1 did not write one; the scenario's own
     # assertions report that, and the rest of the test still runs.
     function Set-CacheAge([int]$Days) { if (Test-Path -LiteralPath $cacheFile) { (Get-Item -LiteralPath $cacheFile).LastWriteTime = (Get-Date).AddDays(-$Days) } }
+    # A good cache, written by Phase 1 itself.
+    function New-GoodCache { Set-Web; Reset-Intel; Invoke-Verbatim $phase1; Reset-Intel }
 
     # Each scenario: Setup (web and cache), then what must hold after Phase 1.
     # Source: IntelSource. Counts: 'full' ($want), 'none' (all 0), or a hashtable.
     # Cache: 'written' (new or replaced), 'kept' (untouched), 'absent'.
+    # Log: a line that must have been logged.
     $scenarios = @(
         @{ Name = 'fresh download'; Setup = { Set-Web };
            Source = 'Live (Neo23x0)'; Counts = 'full'; Cache = 'written'; Gets = 3 }
@@ -209,23 +233,40 @@ try {
         # become an empty entry that matches every path.
         @{ Name = 'CRLF and whitespace lines'; Setup = { Set-Web "`r`n"; foreach ($l in $leaves) { $Script:Web[$l] = $Script:Web[$l] + "`r`n   `r`n`t`r`n" } };
            Source = 'Live (Neo23x0)'; Counts = 'full'; Cache = 'written'; Gets = 3 }
-        @{ Name = 'cache current'; Setup = { Set-Web; Reset-Intel; Invoke-Verbatim $phase1; Reset-Intel };
+        @{ Name = 'cache current'; Setup = { New-GoodCache };
            Source = 'Cache (current)'; Counts = 'full'; Cache = 'kept'; Gets = 0 }
-        @{ Name = 'cache aged, one list fails'; Setup = { Set-Web; Reset-Intel; Invoke-Verbatim $phase1; Reset-Intel; Set-CacheAge 10; $Script:Web['hash-iocs.txt'] = $null };
-           Source = 'Live (Neo23x0, 2 of 3 lists)'; Counts = 'full'; Cache = 'written'; Gets = 3 }
-        @{ Name = 'cache aged, all lists fail'; Setup = { Set-Web; Reset-Intel; Invoke-Verbatim $phase1; Reset-Intel; Set-CacheAge 10; $Script:Web.Clear() };
+        # A partial refresh does not rewrite the cache, so it keeps its age and
+        # the next run tries again.
+        @{ Name = 'cache aged, one list fails'; Setup = { New-GoodCache; Set-CacheAge 10; $Script:Web['hash-iocs.txt'] = $null };
+           Source = 'Live (Neo23x0, 2 of 3 lists)'; Counts = 'full'; Cache = 'kept'; Gets = 3 }
+        @{ Name = 'cache aged, all lists fail'; Setup = { New-GoodCache; Set-CacheAge 10; $Script:Web.Clear() };
            Source = 'Cache (download failed)'; Counts = 'full'; Cache = 'kept'; Gets = 3 }
+        @{ Name = 'cache dated in the future'; Setup = { New-GoodCache; Set-CacheAge -30 };
+           Source = 'Live (Neo23x0)'; Counts = 'full'; Cache = 'written'; Gets = 3 }
+        # A local user can create the cache in ProgramData and own it.
+        @{ Name = 'cache owned by a user'; Setup = { New-GoodCache; $Script:CacheOwner = 'S-1-5-21-1-2-3-1001' };
+           Source = 'Live (Neo23x0)'; Counts = 'full'; Cache = 'written'; Gets = 3; Log = 'not SYSTEM or Administrators: deleting it' }
+        @{ Name = 'cache empty file'; Setup = { Set-Web; [System.IO.File]::WriteAllText($cacheFile, '') };
+           Source = 'Live (Neo23x0)'; Counts = 'full'; Cache = 'written'; Gets = 3; Log = 'cache not usable' }
+        @{ Name = 'cache {}'; Setup = { Set-Web; [System.IO.File]::WriteAllText($cacheFile, '{}') };
+           Source = 'Live (Neo23x0)'; Counts = 'full'; Cache = 'written'; Gets = 3; Log = 'cache not usable' }
+        @{ Name = 'cache corrupt'; Setup = { Set-Web; [System.IO.File]::WriteAllText($cacheFile, '{"Filename":["\\x.exe;80"') };
+           Source = 'Live (Neo23x0)'; Counts = 'full'; Cache = 'written'; Gets = 3; Log = 'cache not usable' }
+        @{ Name = 'cache current, one list empty'; Setup = { Set-Web; New-LegacyCache $cacheFile 'Hashes' };
+           Source = 'Live (Neo23x0)'; Counts = 'full'; Cache = 'written'; Gets = 3; Log = 'cache not usable' }
+        @{ Name = 'legacy whole-line cache'; Setup = { New-LegacyCache $cacheFile };
+           Source = 'Cache (current)'; Counts = 'full'; Cache = 'kept'; Gets = 0 }
         @{ Name = 'no cache, all lists fail'; Setup = { $Script:Web.Clear() };
            Source = 'Hardcoded fallback'; Counts = 'none'; Cache = 'absent'; Gets = 3 }
         # A captive portal or proxy error page parses to nothing: below the floor.
         @{ Name = 'error page'; Setup = { foreach ($l in $leaves) { $Script:Web[$l] = "<!DOCTYPE html>`n<html><body><h1>502 Bad Gateway</h1></body></html>" } };
            Source = 'Hardcoded fallback'; Counts = 'none'; Cache = 'absent'; Gets = 3 }
-        # Over the ceiling: that list is not used, and with no cached copy of it
-        # the cache is not written (the next run downloads again).
-        @{ Name = 'oversize list'; Setup = { Set-Web; $Script:Web['filename-iocs.txt'] = New-Feed 'filename-iocs.txt' "`n" 20001 };
-           Source = 'Live (Neo23x0, 2 of 3 lists)'; Counts = @{ Hash = 123; Filename = 0; C2 = 124 }; Cache = 'absent'; Gets = 3 }
-        @{ Name = 'legacy whole-line cache'; Setup = { New-LegacyCache $cacheFile };
-           Source = 'Cache (current)'; Counts = 'full'; Cache = 'kept'; Gets = 0 }
+        # Over a limit, that list is not used; with no cached copy the other
+        # two are used this run and the cache is not written.
+        @{ Name = 'over 20,000 entries'; Setup = { Set-Web; $Script:Web['filename-iocs.txt'] = New-Feed 'filename-iocs.txt' "`n" 20001 };
+           Source = 'Live (Neo23x0, 2 of 3 lists)'; Counts = @{ Hash = 123; Filename = 0; C2 = 124 }; Cache = 'absent'; Gets = 3; Log = 'outside the expected' }
+        @{ Name = 'over 5 MB'; Setup = { Set-Web; $Script:Web['filename-iocs.txt'] = $Script:Web['filename-iocs.txt'] + "`n#" + ('x' * 5300000) };
+           Source = 'Live (Neo23x0, 2 of 3 lists)'; Counts = @{ Hash = 123; Filename = 0; C2 = 124 }; Cache = 'absent'; Gets = 3; Log = 'over the 5 MB limit' }
         @{ Name = 'engine disabled'; Setup = { Set-Web; $Script:Config.IntelEngine_Enabled = $false };
            Source = 'Disabled (fallback only)'; Counts = 'none'; Cache = 'absent'; Gets = 0 }
     )
@@ -239,6 +280,7 @@ try {
         $before = $failures
         if (Test-Path -LiteralPath $cacheFile) { Remove-Item -LiteralPath $cacheFile -Force }
         $Script:Web.Clear()
+        $Script:CacheOwner = 'S-1-5-18'
         Reset-Intel
         & $sc.Setup
         $stampBefore = Get-CacheStamp
@@ -259,12 +301,12 @@ try {
         if ($Script:HashIOCs.Count -ne $got.Hash -or $Script:FilenameIOCs.Count -ne $got.Filename -or $Script:C2IOCs.Count -ne $got.C2) {
             Fail $label 'the *IOCsLoaded counts do not match the loaded sets'
         }
-        $badHash = @($Script:HashIOCs | Where-Object { $_ -notmatch '^[0-9a-f]{64}$' })
-        $badC2   = @($Script:C2IOCs | Where-Object { -not $_ -or $_.Contains(';') -or $_.Contains(' ') })
-        $badFn   = @($Script:FilenameIOCs | Where-Object { -not $_.Pattern -or $_.Pattern.Contains(';') -or $_.Score -lt 60 })
-        if ($badHash.Count) { Fail $label "hash entries that are not a SHA256: $($badHash[0])" }
-        if ($badC2.Count)   { Fail $label "C2 entries that are not a bare name or address: '$($badC2[0])'" }
-        if ($badFn.Count)   { Fail $label "filename entries with a ';' or under the minimum score: $($badFn[0].Pattern)" }
+        $badHash = @($Script:HashIOCs | Where-Object { $_ -notmatch '^[0-9a-f]{64}$' -or $_ -eq $hashEmpty })
+        $badC2   = @($Script:C2IOCs | Where-Object { -not $_ -or $_.Contains(';') -or $_.Contains(' ') -or $_ -eq 'microsoft.com' })
+        $badFn   = @($Script:FilenameIOCs | Where-Object { -not $_.Pattern -or $_.Pattern.Contains(';') -or $_.Score -lt 60 -or $_.Off })
+        if ($badHash.Count) { Fail $label "hash entries that are not a SHA256, or known good: $($badHash[0])" }
+        if ($badC2.Count)   { Fail $label "C2 entries that are not a bare name or address, or known good: '$($badC2[0])'" }
+        if ($badFn.Count)   { Fail $label "filename entries with a ';', under the minimum score, or off: $($badFn[0].Pattern)" }
 
         $stampAfter = Get-CacheStamp
         switch ($sc.Cache) {
@@ -277,31 +319,45 @@ try {
         # Without -UseBasicParsing, 5.1 hands the response to Internet Explorer's
         # engine, which fails under SYSTEM where IE's first run was never completed.
         if (@($Script:WebCalls | Where-Object { -not $_.Basic }).Count) { Fail $label 'a web request without -UseBasicParsing' }
+        if ($sc.ContainsKey('Log') -and -not @($Script:Logged | Where-Object { $_ -like "*$($sc.Log)*" }).Count) {
+            Fail $label "expected a log line containing '$($sc.Log)'"
+        }
+        if ($sc.Counts -eq 'full' -and -not @($Script:Logged | Where-Object { $_ -match $leftOut }).Count) {
+            Fail $label "expected the log to say what was left out and why: '$leftOut'"
+        }
 
         if ($failures -eq $before) {
             Say "  ok    $label  -  $($Script:Counters.IntelSource); hash $($got.Hash), filename $($got.Filename), C2 $($got.C2)" Green
         }
     }
 
-    # --- Add-IntelHit: report-only --------------------------------------------------
+    # --- Add-IntelHit: report-only ----------------------------------------------
     Reset-Intel
-    foreach ($i in 1..25) { Add-IntelHit -Kind 'filename' -Where "C:\x\hit$i.exe" -Indicator 'p;60' -WouldHave 'kills the process' }
     $af = $failures
-    if ($Script:Counters.IntelHits -ne 25) { Fail 'Add-IntelHit' "IntelHits = $($Script:Counters.IntelHits), expected 25" }
+    $evidence = Join-Path $tmpRoot 'sktest-evidence.exe'
+    [System.IO.File]::WriteAllText($evidence, 'sktest evidence')
+    $evidenceSha = (Get-TestHash 'sktest evidence')
+    Add-IntelHit -Kind 'filename' -Source 'process' -Target "$evidence (PID 1)" -File $evidence -Indicator '\\sktest-evidence\.exe' -Score 80 -WouldHave 'kills the process'
+    foreach ($i in 2..60) { Add-IntelHit -Kind 'C2' -Source 'DNS cache' -Target "x$i.example -> 203.0.113.7" -Indicator '203.0.113.7' }
+    if ($Script:Counters.IntelHits -ne 60) { Fail 'Add-IntelHit' "IntelHits = $($Script:Counters.IntelHits), expected 60" }
     if ($Script:Counters.IOCsFound -ne 0) { Fail 'Add-IntelHit' "IOCsFound = $($Script:Counters.IOCsFound): an intel match must not be an IOC alert" }
     $intelF = @($Script:Findings | Where-Object { $_.Title -like 'Intel match (report-only):*' })
     if ($intelF.Count -ne 21) { Fail 'Add-IntelHit' "$($intelF.Count) findings, expected 20 and one 'more than 20'" }
     if (@($Script:Findings | Where-Object { $_.Severity -ne 'Low' -or $_.Title -match '^(?i)IOC' }).Count) {
         Fail 'Add-IntelHit' 'a finding that is not Low, or whose title starts with IOC (Battlefield alerts on both)'
     }
-    if ($failures -eq $af) { Say '  ok    Add-IntelHit  -  counted, Low findings capped at 20, never an IOC or a High finding' Green }
+    if ($Script:IntelMatches.Count -ne 50) { Fail 'Add-IntelHit' "$($Script:IntelMatches.Count) entries in intel.matches, expected the cap of 50" }
+    $first = $Script:IntelMatches[0]
+    if ($first.sha256 -ne $evidenceSha -or $first.signer -ne 'CN=SKTEST Vendor' -or $first.signature -ne 'Valid' -or
+        $first.would_have -ne 'kills the process' -or $first.score -ne 80 -or $first.source -ne 'process') {
+        Fail 'Add-IntelHit' "the first match's evidence is wrong: $(($first.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; ')"
+    }
+    if ($null -ne $Script:IntelMatches[1].sha256 -or $null -ne $Script:IntelMatches[1].would_have) { Fail 'Add-IntelHit' 'evidence or would_have filled in for a match with no file or action' }
+    if ($failures -eq $af) { Say '  ok    Add-IntelHit  -  counted, 50 in intel.matches with SHA256 and signer, 20 Low findings, never an IOC' Green }
 
     # Fresh load: the matcher and consumer tests below use these sets.
     if (Test-Path -LiteralPath $cacheFile) { Remove-Item -LiteralPath $cacheFile -Force }
     Reset-Intel; Set-Web; Invoke-Verbatim $phase1
-    if (-not @($Script:Logged | Where-Object { $_ -match 'left out: 1 scored below 60, 1 not valid \.NET regex' }).Count) {
-        Fail 'phase 1: counts' "expected the log to count 1 filename IOC below the minimum score and 1 invalid regex"
-    } else { Say '  ok    phase 1: left-out filename IOCs are logged with their reasons' Green }
 } finally {
     # .NET, not Remove-Item: the consumer tests below mock Remove-Item.
     if ([System.IO.Directory]::Exists($tmpRoot)) { [System.IO.Directory]::Delete($tmpRoot, $true) }
@@ -318,7 +374,7 @@ $matchCases = @(
     @('C:\Program Files\Vendor\sktest-fp.exe',            $null,               'its false-positive regex'),
     @('C:\Users\bob\Downloads\sktest-fp.exe',             '\\sktest-fp\.exe',  'outside the false-positive path'),
     @('"C:\Users\Public\sktest-evil.exe" /quiet',         '\\sktest-evil\.exe', 'a command line'),
-    @('C:\Windows\System32\svchost.exe',                  $null,               'an unrelated path'),
+    @('C:\Windows\System32\svchost.exe',                  $null,               'a known-good path (the over-broad entries are out)'),
     @('',                                                 $null,               'an empty path')
 )
 $mf = $failures
@@ -327,11 +383,44 @@ foreach ($c in $matchCases) {
     $got = if ($m) { $m.Pattern } else { $null }
     if ($got -ne $c[1]) { Fail "match: $($c[2])" "'$($c[0])' matched $(if ($got) { "'$got'" } else { 'nothing' }), expected $(if ($c[1]) { "'$($c[1])'" } else { 'nothing' })" }
 }
+# A regex that times out is switched off after its first timeout.
+$slow = [pscustomobject]@{ Pattern = '^(a+)+b$'; Score = 60; Exclude = $null; Off = $false
+                           Regex = (New-Object System.Text.RegularExpressions.Regex -ArgumentList '^(a+)+b$', ([System.Text.RegularExpressions.RegexOptions]::None), ([timespan]::FromMilliseconds(5))) }
+$Script:FilenameIOCs.Insert(0, $slow)
+$null = Find-IntelFilenameMatch -Path (('a' * 40) + '!')
+$null = Find-IntelFilenameMatch -Path (('a' * 40) + '!')
+if (-not $slow.Off -or $Script:IntelRegexTimeouts -ne 1) { Fail 'match: timeout' "a timed-out regex is not switched off (Off=$($slow.Off), timeouts=$($Script:IntelRegexTimeouts))" }
+$Script:FilenameIOCs.RemoveAt(0)
+# The per-run caps: paths, then time.
 $Script:IntelPathBudget = $Script:IntelPathsChecked + 1
 $first  = Find-IntelFilenameMatch -Path 'C:\Users\bob\sktest-evil.exe'
 $second = Find-IntelFilenameMatch -Path 'C:\Users\bob\sktest-evil.exe'
-if (-not $first -or $second -or $Script:IntelPathsSkipped -ne 1) { Fail 'match: per-run cap' "the path after the cap was checked, or not counted as skipped ($($Script:IntelPathsSkipped))" }
-if ($failures -eq $mf) { Say "  ok    matcher  -  full paths, case, (?i), false-positive regex, command lines, and the per-run cap" Green }
+if (-not $first -or $second -or $Script:IntelPathsSkipped -ne 1) { Fail 'match: path cap' "the path after the cap was checked, or not counted as skipped ($($Script:IntelPathsSkipped))" }
+$Script:IntelPathBudget = 3000; $Script:IntelTimeBudget = 0
+if ((Find-IntelFilenameMatch -Path 'C:\Users\bob\sktest-evil.exe') -or $Script:IntelPathsSkipped -ne 2) { Fail 'match: time cap' 'a path was checked after the time budget ran out' }
+$Script:IntelTimeBudget = 30
+if ($failures -eq $mf) { Say "  ok    matcher  -  full paths, case, (?i), false-positive regex, command lines, timeouts, and the per-run caps" Green }
+
+# --- Find-IntelC2Match: whole labels, subdomains, addresses ---------------------
+$c2Cases = @(
+    @('sktest-c2.example',          'sktest-c2.example'),
+    @('SKTEST-C2.Example.',         'sktest-c2.example'),
+    @('beacon.sktest-c2.example',   'sktest-c2.example'),
+    @('a.b.sktest-c2.example',      'sktest-c2.example'),
+    @('notsktest-c2.example',       $null),
+    @('sktest-c2.example.evil',     $null),
+    @('203.0.113.7',                '203.0.113.7'),
+    @('1.203.0.113.7',              $null),
+    @('microsoft.com',              $null),
+    @('www.microsoft.com',          $null),
+    @('',                           $null)
+)
+$cf = $failures
+foreach ($c in $c2Cases) {
+    $got = Find-IntelC2Match $c[0]
+    if ($got -ne $c[1]) { Fail "C2 match: '$($c[0])'" "matched $(if ($got) { "'$got'" } else { 'nothing' }), expected $(if ($c[1]) { "'$($c[1])'" } else { 'nothing' })" }
+}
+if ($failures -eq $cf) { Say '  ok    C2 matcher  -  exact and subdomains by whole labels, addresses exactly, known-good left out' Green }
 
 # --- The consumers ---------------------------------------------------------------
 # Only the checks' own inputs are mocked. Every match against the SKTEST intel
@@ -345,6 +434,7 @@ $Script:Procs   = @()     # pscustomobject Name, Id, Path
 $Script:Hosts   = @()
 $Script:Dns     = @()
 $Script:FileHashes = @{}
+$Script:HashCalls  = 0
 $Script:HkuSids = @()
 
 function Join-Path { param([Parameter(Position = 0)]$Path, [Parameter(Position = 1)]$ChildPath) "$(([string]$Path).TrimEnd('\'))\$ChildPath" }
@@ -387,7 +477,11 @@ function Get-PSDrive {
     @([pscustomobject]@{ Root = 'C:\' }, [pscustomobject]@{ Root = 'D:\' })
 }
 function New-PSDrive { throw 'New-PSDrive should not be needed: the HKU drive is mocked as present' }
-function Get-FileHash { param($LiteralPath, $Algorithm, $ErrorAction) [pscustomobject]@{ Hash = $(if ($Script:FileHashes[$LiteralPath]) { $Script:FileHashes[$LiteralPath].ToUpper() } else { 'AB' * 32 }) } }
+function Get-FileHash {
+    param($LiteralPath, $Algorithm, $ErrorAction)
+    $Script:HashCalls++
+    [pscustomobject]@{ Hash = $(if ($Script:FileHashes[$LiteralPath]) { $Script:FileHashes[$LiteralPath].ToUpper() } else { 'AB' * 32 }) }
+}
 function Get-Content { param($LiteralPath, $ErrorAction, [switch]$Raw) if ($LiteralPath -like '*\drivers\etc\hosts') { $Script:Hosts } else { throw "unmocked file $LiteralPath" } }
 function Get-NetTCPConnection { param($State, $ErrorAction) @() }
 function Get-DnsClientCache { param($ErrorAction) $Script:Dns }
@@ -400,14 +494,25 @@ $Script:CanaryWhitelist = @()
 
 function Reset-World {
     Invoke-Expression $countersLit
-    $Script:IntelPathBudget = 3000; $Script:IntelPathsChecked = 0; $Script:IntelPathsSkipped = 0
+    $Script:IntelPathBudget = 3000; $Script:IntelTimeBudget = 30
+    $Script:IntelPathsChecked = 0; $Script:IntelPathsSkipped = 0; $Script:IntelRegexTimeouts = 0
+    $Script:IntelMatchClock.Reset(); $Script:IntelMatches.Clear()
     $Script:Logged.Clear(); $Script:Findings.Clear(); $Script:Actions.Clear()
     $Script:Dirs = @{}; $Script:Files = @{}; $Script:Reg = @{}; $Script:Procs = @(); $Script:Hosts = @(); $Script:Dns = @()
-    $Script:FileHashes = @{}; $Script:HkuSids = @()
+    $Script:FileHashes = @{}; $Script:HashCalls = 0; $Script:HkuSids = @()
 }
 
-# Each consumer: the world it sees, the code, the intel matches it must report,
-# the actions it must take (hard-coded matches only), and its IOC count.
+$detectionFiles = {
+    $Script:Dirs['C:\Users'] = @('bob')
+    $Script:Dirs['C:\Users\bob\Downloads'] = @()
+    $Script:Files['C:\Users\bob\Downloads'] = @('sktest-evil.exe', 'sktest-hashed.dll', 'invoice.pdf')
+    $Script:FileHashes['C:\Users\bob\Downloads\sktest-hashed.dll'] = $hashEvil
+}
+
+# Each consumer: the world it sees, the code, and every intel match it must
+# report ('kind|source|target|would_have', -like patterns), the actions it must
+# take (hard-coded matches only) and its IOC count. Blocks: how many hosts
+# lines must be logged as blocking a C2 name. HashCalls: files hashed.
 $consumers = @(
     @{ Name = 'Process Engine'; Code = $procLoop
        Setup = {
@@ -415,10 +520,13 @@ $consumers = @(
                [pscustomobject]@{ Name = 'sktest-evil'; Id = 4101; CPU = 1.0; Path = 'C:\Users\bob\AppData\Local\Temp\sktest-evil.exe' }
                [pscustomobject]@{ Name = 'njrat';       Id = 4102; CPU = 1.0; Path = 'C:\Users\bob\AppData\Roaming\njrat.exe' }
                [pscustomobject]@{ Name = 'NVDisplay.Container'; Id = 4103; CPU = 1.0; Path = 'C:\Program Files\NVIDIA Corporation\Display.NvContainer\NVDisplay.Container.exe' }
+               [pscustomobject]@{ Name = 'sktest-evil'; Id = 4104; CPU = 1.0; Path = 'C:\Program Files\SkVendor\sktest-evil.exe' }
            )
            $Script:Cache_Processes = $Script:Procs
        }
-       Hits = 1; Actions = @('kill 4102'); Iocs = 1 }
+       Matches = @('filename|process|C:\Users\bob\AppData\Local\Temp\sktest-evil.exe (PID 4101)|kills the process'
+                   'filename|process|C:\Program Files\SkVendor\sktest-evil.exe (PID 4104)|is only reported (vendor path)')
+       Actions = @('kill 4102'); Iocs = 1 }
     @{ Name = 'Persistence Engine'; Code = $persist
        Setup = {
            $run = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
@@ -430,31 +538,52 @@ $consumers = @(
            $startup = 'C:\Users\bob\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup'
            $Script:Files[$startup] = @('sktest-shortcut.lnk', 'Send to OneNote.lnk')
        }
-       Hits = 3; Actions = @('remove value HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run\Njrat'); Iocs = 1 }
+       Matches = @('filename|Run value|HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run\SkEvil = "C:\Users\Public\sktest-evil.exe" /q|removes the Run value'
+                   'filename|Run value|HKU:\S-1-5-21-1-2-3-1001\SOFTWARE\Microsoft\Windows\CurrentVersion\Run\SkEvilUser = C:\Users\bob\AppData\Roaming\sktest-evil.exe (user: *)|removes the Run value'
+                   'filename|startup shortcut|C:\Users\bob\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\sktest-shortcut.lnk|deletes the shortcut')
+       Actions = @('remove value HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run\Njrat'); Iocs = 1 }
     @{ Name = 'Redirected folder scan'; Code = $redirected
        Setup = {
            $Script:Dirs['D:\Users'] = @('bob')
            $Script:Files['D:\Users\bob\Downloads'] = @('sktest-evil.exe', 'toolbar-setup.exe', 'report.pdf')
        }
-       Hits = 1; Actions = @('delete D:\Users\bob\Downloads\toolbar-setup.exe'); Iocs = 1 }
+       Matches = @('filename|redirected folder|D:\Users\bob\Downloads\sktest-evil.exe|deletes the file')
+       Actions = @('delete D:\Users\bob\Downloads\toolbar-setup.exe'); Iocs = 1 }
     @{ Name = 'Detection Engine'; Code = $detection
        Setup = {
-           $Script:Dirs['C:\Users'] = @('bob')
-           $Script:Dirs['C:\Users\bob\Downloads'] = @()
-           $Script:Files['C:\Users\bob\Downloads'] = @('sktest-evil.exe', 'sktest-hashed.dll', 'invoice.pdf')
-           $Script:FileHashes['C:\Users\bob\Downloads\sktest-hashed.dll'] = $hashEvil
+           & $detectionFiles
            $Script:Hosts = @(
                '# Copyright (c) 1993-2009 Microsoft Corp.'
                '127.0.0.1       localhost'
                '10.0.0.6        sktest-c2.example      # C2, pointed at a routable address'
-               '0.0.0.0         sktest-c2.example      # C2, blocked: not a match'
-               '10.0.0.5        notsktest-c2.example   # a substring of a C2 name: not a match'
+               "10.0.0.8`tgood.local`tapi.sktest-c2.example"
+               '203.0.113.7     printer.local          # a C2 address'
+               '0.0.0.0         sktest-c2.example      # blocked'
+               '::1             sktest-c2.example      # blocked'
+               '0:0:0:0:0:0:0:0 sktest-c2.example      # blocked'
+               '10.0.0.5        notsktest-c2.example   # a longer name ending the same way: no match'
+               '10.0.0.9        fine.local             # in a comment, no match: sktest-c2.example'
                '10.0.0.7        intranet.corp.local'
            )
-           $Script:Dns = @([pscustomobject]@{ Entry = 'sktest-c2.example.'; Data = '203.0.113.7' },
-                           [pscustomobject]@{ Entry = 'www.microsoft.com';  Data = '23.1.2.3' })
+           $Script:Dns = @([pscustomobject]@{ Entry = 'sktest-c2.example.';       Data = '10.1.1.1' },
+                           [pscustomobject]@{ Entry = 'beacon.sktest-c2.example'; Data = '10.1.1.2' },
+                           [pscustomobject]@{ Entry = 'cdn.benign.example';       Data = '203.0.113.7' },
+                           [pscustomobject]@{ Entry = 'www.microsoft.com';        Data = '23.1.2.3' })
        }
-       Hits = 4; Actions = @(); Iocs = 0 }
+       Matches = @('filename|scanned file|C:\Users\bob\Downloads\sktest-evil.exe|'
+                   'hash|scanned file|C:\Users\bob\Downloads\sktest-hashed.dll|'
+                   'C2|hosts file|10.0.0.6        sktest-c2.example      # C2, pointed at a routable address|'
+                   "C2|hosts file|10.0.0.8`tgood.local`tapi.sktest-c2.example|"
+                   'C2|hosts file|203.0.113.7     printer.local          # a C2 address|'
+                   'C2|DNS cache|sktest-c2.example. -> 10.1.1.1|'
+                   'C2|DNS cache|beacon.sktest-c2.example -> 10.1.1.2|'
+                   'C2|DNS cache|cdn.benign.example -> 203.0.113.7|')
+       Actions = @(); Iocs = 0; Blocks = 3; HashCalls = 2 }
+    # With no hash intel loaded, no file is hashed.
+    @{ Name = 'Detection Engine, no hash intel'; Code = $detection
+       Setup = { & $detectionFiles; $Script:HashIOCs.Clear() }
+       Matches = @('filename|scanned file|C:\Users\bob\Downloads\sktest-evil.exe|')
+       Actions = @(); Iocs = 0; Blocks = 0; HashCalls = 0 }
 )
 
 foreach ($c in $consumers) {
@@ -466,20 +595,28 @@ foreach ($c in $consumers) {
 
     $skipped = @($Script:Logged | Where-Object { $_ -match ' skipped  -  ' })
     if ($skipped.Count) { Fail $label "a block aborted: $($skipped -join ' | ')" }
-    if ($Script:Counters.IntelHits -ne $c.Hits) {
-        Fail $label "$($Script:Counters.IntelHits) intel matches reported, expected $($c.Hits): $((@($Script:Logged | Where-Object { $_ -like 'WARN: Intel *' })) -join ' | ')"
-    }
+    if ($Script:Counters.IntelHits -ne $c.Matches.Count) { Fail $label "$($Script:Counters.IntelHits) intel matches counted, expected $($c.Matches.Count)" }
+    $got = @($Script:IntelMatches | ForEach-Object { "$($_.kind)|$($_.source)|$($_.target)|$($_.would_have)" })
+    $missing = @($c.Matches | Where-Object { $p = $_; -not @($got | Where-Object { $_ -like $p }).Count })
+    $extra   = @($got | Where-Object { $g = $_; -not @($c.Matches | Where-Object { $g -like $_ }).Count })
+    if ($missing.Count) { Fail $label "intel matches not reported: $($missing -join ' || ')" }
+    if ($extra.Count)   { Fail $label "unexpected intel matches: $($extra -join ' || ')" }
     $acts = @($Script:Actions)
     if (($acts -join '|') -ne ($c.Actions -join '|')) {
         Fail $label "actions taken: [$($acts -join '; ')], expected [$($c.Actions -join '; ')] (hard-coded matches only)"
     }
     if ($Script:Counters.IOCsFound -ne $c.Iocs) { Fail $label "IOCsFound = $($Script:Counters.IOCsFound), expected $($c.Iocs) (hard-coded matches only)" }
     $intelF = @($Script:Findings | Where-Object { $_.Title -like 'Intel match (report-only):*' })
-    if ($intelF.Count -ne $c.Hits -or @($intelF | Where-Object { $_.Severity -ne 'Low' }).Count) {
-        Fail $label "$($intelF.Count) Low intel findings, expected $($c.Hits)"
+    if ($intelF.Count -ne $c.Matches.Count -or @($intelF | Where-Object { $_.Severity -ne 'Low' }).Count) {
+        Fail $label "$($intelF.Count) Low intel findings, expected $($c.Matches.Count)"
     }
+    if ($c.ContainsKey('Blocks')) {
+        $blocks = @($Script:Logged | Where-Object { $_ -like 'INFO: Hosts file blocks C2 name(s) sktest-c2.example:*' }).Count
+        if ($blocks -ne $c.Blocks) { Fail $label "$blocks hosts lines logged as blocking a C2 name, expected $($c.Blocks)" }
+    }
+    if ($c.ContainsKey('HashCalls') -and $Script:HashCalls -ne $c.HashCalls) { Fail $label "$($Script:HashCalls) files hashed, expected $($c.HashCalls)" }
     if ($failures -eq $before) {
-        Say "  ok    $label  -  $($c.Hits) intel match(es) reported, none acted on; hard-coded actions: $(if ($acts.Count) { $acts -join '; ' } else { 'none' })" Green
+        Say "  ok    $label  -  $($c.Matches.Count) intel match(es) reported, none acted on; hard-coded actions: $(if ($acts.Count) { $acts -join '; ' } else { 'none' })" Green
     }
 }
 
