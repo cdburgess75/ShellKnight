@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.09.24.001  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.09.25.001  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.09.24.001
-    Released   : 2026-09-24
-    Prior      : v2026.09.15.001
+    Version    : v2026.09.25.001
+    Released   : 2026-09-25
+    Prior      : v2026.09.24.001
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,33 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.09.25.001 - Assessment Engine results now reach the report and the
+             score. Invoke-SafeBlock runs its block as a child scope
+             (& $Block). The engine set $avProduct, $edrProduct, $defStatus,
+             $bitlockerWarn, $osEolWarn and $wuLastWarn with bare
+             assignments, and each one made a local copy that was discarded
+             when the block returned. So the payload and the scoring saw the
+             script-level defaults on every run since v1.002: antivirus
+             'NONE DETECTED', edr 'None detected' and defender 'Unknown' on
+             every device, and the BitLocker (-15), OS EOL (-20) and Windows
+             Update (-15) penalties never applied. MachineInfo and the log
+             were right all along. The payload now reads antivirus, edr and
+             defender from MachineInfo, so when the engine did not run they
+             are null rather than a default reported as fact. The three flags
+             are $Script:-scoped.
+             SCORING CHANGE. Devices with BitLocker off, an end-of-life build,
+             or no Windows Update install in over 30 days lose 15, 20 and 15
+             points respectively, up to 50 in all. Each flag is set only by a
+             positive detection, so a probe that fails costs nothing. The
+             Defender DISABLED rule (-20) is removed rather than switched on.
+             Live, it would hit every box whose third-party AV turns Defender
+             off, and on a box with no AV it would stack with the -25 no-AV
+             rule. Expect grades to drop on the first run of this version.
+             That is a measurement correction; nothing changed on the
+             endpoints.
+             The same bug made the Persistence Engine log "no malware Run keys
+             found" and "no browser policy hijacks found" even after a
+             removal. Those counters are $Script:-scoped too (log text only).
     v2026.09.24.001 - Check-ins restored; two silent field failures fixed.
              (1) Devices "ignored" by Battlefield. v2026.09.08.001 dropped the
              Defender catch that set $defSigs = 'Unknown', so where every probe
@@ -431,7 +458,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.09.24.001 CONFIGURATION
+# SHELLKNIGHT v2026.09.25.001 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -624,7 +651,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.09.24.001'
+    Version                  = 'v2026.09.25.001'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -1014,7 +1041,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.09.24.001'
+$version     = 'ShellKnight v2026.09.25.001'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -1208,12 +1235,15 @@ Write-PhaseProgress -PhaseNum 2 -PhaseName 'Assessment Engine'
 Log-Info '--- Phase 2: Assessment Engine ---'
 
 $Script:MachineInfo = [ordered]@{}
-$bitlockerWarn      = $false
-$osEolWarn          = $false
-$wuLastWarn         = $false
-$avProduct          = 'NONE DETECTED'
-$edrProduct         = 'None detected'
-$defStatus          = 'Unknown'
+# Read by the scoring after the engine, so the engine sets them with $Script:.
+# Invoke-SafeBlock runs the engine as a child scope (& $Block), where a bare
+# assignment makes a local that is gone when the block returns. Until
+# v2026.09.25.001 these, and the payload's antivirus/edr/defender, were bare
+# script-level variables, so the scoring and the report only ever saw their
+# defaults. The payload now reads those three from MachineInfo.
+$Script:BitLockerWarn = $false
+$Script:OsEolWarn     = $false
+$Script:WuLastWarn    = $false
 # Scored separately from $avProduct so a *failed* detection can never be scored
 # as "unprotected" - that mistake has cost the whole fleet 25 points twice now
 # (v2026.07.30.001's aborted engine, and the Defender-excluded-from-AV bug).
@@ -1286,12 +1316,12 @@ if ($Script:Config.AssessmentEngine_Enabled) {
         try {
             $bl = Get-BitLockerVolume -MountPoint 'C:' -ErrorAction Stop
             $blStatus = $bl.ProtectionStatus
-            if ($blStatus -ne 'On') { $bitlockerWarn = $true; $blStatus = 'Off' } else { $blStatus = 'On' }
+            if ($blStatus -ne 'On') { $Script:BitLockerWarn = $true; $blStatus = 'Off' } else { $blStatus = 'On' }
         } catch {
             try {
                 $blWmi = Get-CimInstance -Namespace 'Root\CIMV2\Security\MicrosoftVolumeEncryption' `
                          -ClassName 'Win32_EncryptableVolume' -Filter "DriveLetter='C:'" -ErrorAction Stop
-                $blStatus = if ($blWmi.ProtectionStatus -eq 1) { 'On' } else { 'Off'; $bitlockerWarn = $true }
+                $blStatus = if ($blWmi.ProtectionStatus -eq 1) { 'On' } else { 'Off'; $Script:BitLockerWarn = $true }
             } catch { }
         }
 
@@ -1311,7 +1341,7 @@ if ($Script:Config.AssessmentEngine_Enabled) {
         }
         $eolDate   = $eolDates[$osBuild]
         $eolStr    = if ($eolDate) {
-            if ((Get-Date) -gt $eolDate) { $osEolWarn = $true; "END OF LIFE (since $($eolDate.ToString('yyyy-MM-dd')))"}
+            if ((Get-Date) -gt $eolDate) { $Script:OsEolWarn = $true; "END OF LIFE (since $($eolDate.ToString('yyyy-MM-dd')))"}
             else { "Supported until $($eolDate.ToString('yyyy-MM-dd'))" }
         } else { 'Unknown' }
 
@@ -1413,9 +1443,12 @@ if ($Script:Config.AssessmentEngine_Enabled) {
         # Resolve the reported AV product and whether the box is actually
         # protected. Defender registered with Security Center counts as
         # protection unless we positively know real-time protection is off.
+        # Every branch assigns: $avProduct is local to the engine now, so an
+        # unassigned one would throw in the MachineInfo literal (StrictMode).
         if     ($avProducts.Count -gt 0)  { $avProduct = $avProducts -join ', ' }
         elseif ($defStatus -eq 'Active')  { $avProduct = 'Windows Defender' }
         elseif ($defenderRegistered)      { $avProduct = "Windows Defender (status $defStatus)" }
+        else                              { $avProduct = 'NONE DETECTED' }
         $Script:HasActiveAv = ($avProducts.Count -gt 0) -or ($defStatus -eq 'Active') -or
                               ($defenderRegistered -and $defStatus -ne 'DISABLED')
         $Script:AvDetectionRan = $true
@@ -1432,7 +1465,7 @@ if ($Script:Config.AssessmentEngine_Enabled) {
                 $wuDate    = $history.Item(0).Date
                 $wuDaysAgo = ([datetime]::Now - $wuDate).Days
                 $wuStr     = "$($wuDate.ToString('yyyy-MM-dd')) ($wuDaysAgo days ago)"
-                if ($wuDaysAgo -gt 30) { $wuLastWarn = $true }
+                if ($wuDaysAgo -gt 30) { $Script:WuLastWarn = $true }
             }
         } catch { $wuStr = 'Unknown' }
 
@@ -1496,13 +1529,13 @@ if ($Script:Config.AssessmentEngine_Enabled) {
 
         # Screen summary
         Write-Host "  Hostname: $($env:COMPUTERNAME)  |  OS: $osName  |  RAM: $ramGB GB  |  Disk: $diskFreeGB GB free" -ForegroundColor White
-        if ($osEolWarn)    { Log-Warn "OS EOL: $eolStr" }
-        if ($bitlockerWarn){
+        if ($Script:OsEolWarn)     { Log-Warn "OS EOL: $eolStr" }
+        if ($Script:BitLockerWarn) {
             Log-Warn "BitLocker: C: drive is NOT encrypted"
             Add-Finding -Severity Medium -Title 'BitLocker not enabled on C:' -Action 'Enable BitLocker (required for HIPAA/CJIS clients; escrow recovery key in AD/RMM)'
         }
         if ($pcAgeYrs -gt 5){ Log-Warn "Aging hardware: PC is $pcAgeYrs years (BIOS: $($biosDate.ToString('yyyy-MM-dd')))" }
-        if ($wuLastWarn)   { Log-Warn "Windows Update: last install was $wuDaysAgo days ago" }
+        if ($Script:WuLastWarn)    { Log-Warn "Windows Update: last install was $wuDaysAgo days ago" }
 
         # Hyper-V detection
         Invoke-SafeBlock -Label 'Hyper-V detection' -Block {
@@ -1928,7 +1961,7 @@ if ($Script:Config.PersistenceEngine_Enabled) {
         'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run'
     )
 
-    $runKeysRemoved = 0
+    $Script:RunKeysFound = 0     # $Script: - incremented inside Invoke-SafeBlock (child scope)
     foreach ($keyPath in $runKeyPaths) {
         if (-not (Test-Path $keyPath)) { continue }
         Invoke-SafeBlock -Label "Run key $keyPath" -Block {
@@ -1944,14 +1977,14 @@ if ($Script:Config.PersistenceEngine_Enabled) {
                     Log-Success "Removed Run key: $name"
                     $Script:Counters.RunKeysRemoved++
                     $Script:Counters.IOCsFound++
-                    $runKeysRemoved++
+                    $Script:RunKeysFound++
                 } else {
                     Log-Info "  [RUN] $name = $val"
                 }
             }
         }
     }
-    if ($runKeysRemoved -eq 0) { Log-Summary "Persistence Engine  -  no malware Run keys found" }
+    if ($Script:RunKeysFound -eq 0) { Log-Summary "Persistence Engine  -  no malware Run keys found" }
 
     # Per-user Run / RunOnce keys via HKEY_USERS.
     # Running as SYSTEM, HKCU above is SYSTEM's own hive - real users' Run keys
@@ -2054,7 +2087,7 @@ if ($Script:Config.PersistenceEngine_Enabled) {
         'HKCU:\SOFTWARE\Policies\Google\Chrome',
         'HKCU:\SOFTWARE\Policies\Microsoft\Edge'
     )
-    $policyRemoved = 0
+    $Script:PolicyRemoved = 0    # $Script: - incremented inside Invoke-SafeBlock (child scope)
     foreach ($policyPath in $browserPolicyPaths) {
         if (-not (Test-Path $policyPath)) { continue }
         Invoke-SafeBlock -Label "Browser policy $policyPath" -Block {
@@ -2064,12 +2097,12 @@ if ($Script:Config.PersistenceEngine_Enabled) {
                 Log-IOC "Suspicious browser policy: $($_.Name) = $($_.Value)"
                 Remove-ItemProperty -Path $policyPath -Name $_.Name -Force -ErrorAction SilentlyContinue
                 Log-Success "Removed browser policy key: $($_.Name)"
-                $policyRemoved++
+                $Script:PolicyRemoved++
                 $Script:Counters.IOCsFound++
             }
         }
     }
-    if ($policyRemoved -eq 0) { Log-Summary "Persistence Engine  -  no browser policy hijacks found" }
+    if ($Script:PolicyRemoved -eq 0) { Log-Summary "Persistence Engine  -  no browser policy hijacks found" }
 
     # Defender exclusion audit
     Invoke-SafeBlock -Label 'Defender exclusions' -Block {
@@ -3268,10 +3301,17 @@ $Script:SecurityScore = 100
 if ($Script:Counters.IOCsFound -gt 0)            { $Script:SecurityScore -= [math]::Min(50, $Script:Counters.IOCsFound * 15) }
 if ($Script:Counters.Failed)                      { $Script:SecurityScore -= 10 }
 if ($Script:AvDetectionRan -and -not $Script:HasActiveAv) { $Script:SecurityScore -= 25 }
-if ($defStatus -eq 'DISABLED')                    { $Script:SecurityScore -= 20 }
-if ($osEolWarn)                                   { $Script:SecurityScore -= 20 }
-if ($bitlockerWarn)                               { $Script:SecurityScore -= 15 }
-if ($wuLastWarn)                                  { $Script:SecurityScore -= 15 }
+# Defender DISABLED is not scored on its own. That rule (-20) was here from
+# v1.002 but never fired, because it read a script-level $defStatus the engine
+# never wrote to (see Phase 2). If it were live it would take 20 from every box
+# whose third-party AV has turned Defender off, which Windows does by design.
+# On a box with no AV at all it would stack on the -25 above. "No working AV"
+# is scored once, above.
+# These three are live from v2026.09.25.001. Each is set only by a positive
+# detection; a probe that fails leaves it $false.
+if ($Script:OsEolWarn)                            { $Script:SecurityScore -= 20 }
+if ($Script:BitLockerWarn)                        { $Script:SecurityScore -= 15 }
+if ($Script:WuLastWarn)                           { $Script:SecurityScore -= 15 }
 if ($inactiveAccounts.Count -gt 0)               { $Script:SecurityScore -= [math]::Min(15, $inactiveAccounts.Count * 5) }
 try { $smb1Sc = Get-SmbServerConfiguration -ErrorAction Stop | Select-Object -ExpandProperty EnableSMB1Protocol
       if ($smb1Sc) { $Script:SecurityScore -= 20 } } catch { }
@@ -3328,7 +3368,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.09.24.001 - Report"
+Log-Info "  ShellKnight v2026.09.25.001 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -3341,7 +3381,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.09.24.001 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.09.25.001 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -3613,7 +3653,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.09.24.001'
+    version          = 'v2026.09.25.001'
     device_id        = $Script:DeviceId
     hardware_type    = $Script:MachineInfo['Hardware Type']
     site_name        = $SK_SiteName
@@ -3633,9 +3673,9 @@ $jsonData = [ordered]@{
     disk_free_gb     = $freeGB
     disk_free_after  = $freeAfterGB
     bitlocker        = $Script:MachineInfo['BitLocker']
-    antivirus        = $avProduct
-    edr              = $edrProduct
-    defender         = $defStatus
+    antivirus        = $Script:MachineInfo['Antivirus']
+    edr              = $Script:MachineInfo['EDR']
+    defender         = $Script:MachineInfo['Defender']
     defender_sigs    = $Script:MachineInfo['Defender Sigs']
     last_wu_install  = $Script:MachineInfo['Last WU Install']
     domain           = $Script:MachineInfo['Domain/Workgroup']
