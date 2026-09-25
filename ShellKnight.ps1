@@ -59,6 +59,10 @@
              Characters above U+00FF were best-fitted to ASCII, some to a quote
              or backslash that breaks the JSON. The report is now POSTed as
              UTF-8 bytes with 'application/json; charset=utf-8'.
+             The fleet did not recover on v2026.09.15.001 because the cause was
+             in .001, not the network block. Passive network inventory stays
+             disabled here all the same, until it has had its own real Windows
+             run.
     v2026.09.15.001 - ROLLBACK: passive network inventory disabled by default.
              Reporting hosts fell from 13-16/day to 6-7/day on 2026-09-09, the
              first full day after the .001-.004 releases, and stayed there for a
@@ -1228,11 +1232,18 @@ $Script:MinPasswordLen = 0
 $Script:DeviceId = "host:$($env:COMPUTERNAME)"
 Invoke-SafeBlock -Label 'Device identity' -Block {
     $deviceId = $null
+    $wmiUp    = $true
     try {
         $hwUuid = (Get-CimInstance Win32_ComputerSystemProduct -ErrorAction Stop).UUID
         if ($hwUuid -and $hwUuid -notmatch '^(0{8}-0{4}-0{4}-0{4}-0{12}|FFFFFFFF)' ) { $deviceId = $hwUuid.Trim() }
-    } catch { }
-    if (-not $deviceId) {
+    } catch {
+        # Inside the engine this code only ran once Win32_OperatingSystem had
+        # answered; with WMI down the report went out as host:<name>. Keep
+        # that, so a WMI outage cannot re-enroll a UUID-known machine under
+        # its MachineGuid.
+        try { $null = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop } catch { $wmiUp = $false }
+    }
+    if (-not $deviceId -and $wmiUp) {
         try { $deviceId = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid -ErrorAction Stop).MachineGuid } catch { }
     }
     if ($deviceId) { $Script:DeviceId = $deviceId }
