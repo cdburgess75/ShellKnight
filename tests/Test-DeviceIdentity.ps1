@@ -38,6 +38,7 @@ function Get-Section {
 
 $safeBlock = Get-Section '(?ms)^function Invoke-SafeBlock \{.*?^\}' 'Invoke-SafeBlock'
 $biosDate  = Get-Section '(?ms)^function ConvertTo-BiosDate \{.*?^\}' 'ConvertTo-BiosDate'
+$osEol     = Get-Section '(?ms)^function Get-OsEolDate \{.*?^\}' 'Get-OsEolDate'
 # Phase 2 init, the device identity block, and the engine up to the end of the
 # MachineInfo literal. The engine's Invoke-SafeBlock and if are closed by hand.
 $phase2    = Get-Section ('(?ms)^\$Script:MachineInfo = \[ordered\]@\{\}\s*$.*?' +
@@ -139,6 +140,7 @@ function New-Object {
 
 Invoke-Expression $safeBlock
 Invoke-Expression $biosDate
+Invoke-Expression $osEol
 
 # --- Scenarios --------------------------------------------------------------
 # EngineRuns: whether MachineInfo should be populated. Sigs/Wu: expected

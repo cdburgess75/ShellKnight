@@ -53,6 +53,7 @@ function Get-Section {
 
 $safeBlock = Get-Section '(?ms)^function Invoke-SafeBlock \{.*?^\}' 'Invoke-SafeBlock'
 $biosDate  = Get-Section '(?ms)^function ConvertTo-BiosDate \{.*?^\}' 'ConvertTo-BiosDate'
+$osEol     = Get-Section '(?ms)^function Get-OsEolDate \{.*?^\}' 'Get-OsEolDate'
 # Phase 2 from the MachineInfo reset to the end of the engine's if/else.
 $phase2    = Get-Section ('(?ms)^\$Script:MachineInfo = \[ordered\]@\{\}\s*$.*?' +
                           '^    Log-Info "Assessment Engine  -  disabled"\s*^\}') 'Phase 2 (the Assessment Engine)'
@@ -186,6 +187,7 @@ function Get-NetFirewallProfile { param($ErrorAction) @([pscustomobject]@{ Profi
 
 Invoke-Expression $safeBlock
 Invoke-Expression $biosDate
+Invoke-Expression $osEol
 
 # --- Scenarios --------------------------------------------------------------
 # The machine each mock describes, and what the payload and the score must say.
@@ -194,11 +196,14 @@ Invoke-Expression $biosDate
 # for Av/Edr/Def means the engine did not run, so the payload has no value to
 # report. Pw is the CIS 1.1.1 finding's title, or $null for none. Len is the
 # payload's password_min_length: the length read, or $null when it was not.
-$healthy = @{ Engine = 'runs'; Caption = 'Microsoft Windows 11 Pro'; Build = '22631'; BitLocker = 'On'; WuDays = 6
+# The healthy machine's OS is supported until 2034-10-10 (Get-OsEolDate), so
+# this fixture does not age into end of life. Tests/Test-OsEol.ps1 covers the
+# edition dates themselves.
+$healthy = @{ Engine = 'runs'; Caption = 'Microsoft Windows 11 IoT Enterprise LTSC'; Build = '26100'; BitLocker = 'On'; WuDays = 6
               AvList = @('Windows Defender'); Defender = 'active'; Services = @(); Net = 'ok'; PwLen = 14 }
 function New-Scenario([string]$Name, [hashtable]$Machine, [hashtable]$Expect) {
     $m = $healthy.Clone(); foreach ($k in $Machine.Keys) { $m[$k] = $Machine[$k] }
-    $e = @{ Av = 'Windows Defender'; Edr = 'None detected'; Def = 'Active'; Penalty = 0; Finding = $false; Pw = $null; Len = 14 }
+    $e = @{ Av = 'Windows Defender'; Edr = 'None detected'; Def = 'Active'; Penalty = 0; Finding = $false; Pw = $null; Len = 14; Eol = $false }
     foreach ($k in $Expect.Keys) { $e[$k] = $Expect[$k] }
     $m.Name = $Name; $m.Expect = $e; $m
 }
@@ -208,9 +213,13 @@ $scenarios = @(
     New-Scenario 'bitlocker-off-cim'     @{ BitLocker = 'Off-cim' }            @{ Penalty = 15; Finding = $true }
     # Neither probe answers: unknown, so no penalty (ADR 0009).
     New-Scenario 'bitlocker-unavailable' @{ BitLocker = 'unavailable' }        @{}
-    New-Scenario 'os-eol'                @{ Caption = 'Microsoft Windows 10 Pro'; Build = '19043' } @{ Penalty = 20 }
+    New-Scenario 'os-eol'                @{ Caption = 'Microsoft Windows 10 Pro'; Build = '19043' } @{ Penalty = 20; Eol = $true }
+    # One build, two editions, two answers: the engine must look up the
+    # caption it read, not just the build. Stable until 2029-01-09.
+    New-Scenario 'os-eol-1809-pro'       @{ Caption = 'Microsoft Windows 10 Pro'; Build = '17763' } @{ Penalty = 20; Eol = $true }
+    New-Scenario 'os-eol-1809-ltsc'      @{ Caption = 'Microsoft Windows 10 Enterprise LTSC'; Build = '17763' } @{}
     New-Scenario 'wu-stale'              @{ WuDays = 45 }                      @{ Penalty = 15 }
-    New-Scenario 'all-three'             @{ BitLocker = 'Off'; Caption = 'Microsoft Windows 10 Pro'; Build = '19043'; WuDays = 45 } @{ Penalty = 50; Finding = $true }
+    New-Scenario 'all-three'             @{ BitLocker = 'Off'; Caption = 'Microsoft Windows 10 Pro'; Build = '19043'; WuDays = 45 } @{ Penalty = 50; Finding = $true; Eol = $true }
     # Windows turns Defender off when a third-party AV registers. Protected:
     # no penalty (the old Defender DISABLED rule would have taken 20).
     New-Scenario 'third-party-av'        @{ AvList = @('Windows Defender', 'Bitdefender Endpoint Security Tools'); Defender = 'off' } @{ Av = 'Bitdefender Endpoint Security Tools'; Def = 'DISABLED' }
@@ -282,7 +291,7 @@ foreach ($sc in $scenarios) {
         $wantBl = if ($sc.BitLocker -eq 'On') { 'On' } elseif ($sc.BitLocker -eq 'unavailable') { 'Not available' } else { 'Off' }
         if ($payload['bitlocker'] -ne $wantBl) { Fail $label "payload bitlocker = $(Show $payload['bitlocker']), expected '$wantBl'" }
         $eol = "$($payload['os_eol'])" -like 'END OF LIFE*'
-        if ($eol -ne ($sc.Build -eq '19043')) { Fail $label "payload os_eol = $(Show $payload['os_eol'])" }
+        if ($eol -ne $x.Eol) { Fail $label "payload os_eol = $(Show $payload['os_eol']), expected $(if ($x.Eol) { 'END OF LIFE' } else { 'not END OF LIFE' })" }
     }
 
     $score = 100 - $x.Penalty
