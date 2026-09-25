@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.09.15.001  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.09.24.001  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.09.15.001
-    Released   : 2026-09-15
-    Prior      : v2026.09.08.004
+    Version    : v2026.09.24.001
+    Released   : 2026-09-24
+    Prior      : v2026.09.15.001
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,32 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.09.24.001 - Check-ins restored; two silent field failures fixed.
+             (1) Devices "ignored" by Battlefield. v2026.09.08.001 dropped the
+             Defender catch that set $defSigs = 'Unknown', so where every probe
+             fails (Get-MpComputerStatus throws under SYSTEM, and the CIM class
+             is missing or has no signature date - third-party AV, Defender
+             removed) the unset $defSigs threw under StrictMode 2 inside the
+             MachineInfo literal. Invoke-SafeBlock logged it and moved on,
+             MachineInfo stayed empty and device_id went out null. Battlefield
+             fell back to host:<name>, which frozen enrollment does not know
+             for a UUID-enrolled device, so every POST got 200 "ignored" and
+             nothing was stored. Very likely the 2026-09-09 reporting drop that
+             v2026.09.15.001 could not explain. $defSigs, and $wuStr (unset on
+             an empty Windows Update history), now start as 'Unknown'. Device
+             identity (UUID -> MachineGuid -> host:<name>, same values) now
+             runs in its own block before, and regardless of, the engine; its
+             result $Script:DeviceId starts at the host:<name> fallback, is
+             never null, and feeds both MachineInfo and the payload. An engine
+             failure now costs machine details, never the check-in.
+             (2) HTTP 400 "body is not valid JSON". Windows PowerShell 5.1
+             encodes a string -Body as ISO-8859-1 when -ContentType has no
+             charset, so one character in U+0080..U+00FF (e.g. in an Event
+             7045 service name) became an invalid UTF-8 byte and the whole
+             report was rejected until the event left the 7-day window.
+             Characters above U+00FF were best-fitted to ASCII, some to a quote
+             or backslash that breaks the JSON. The report is now POSTed as
+             UTF-8 bytes with 'application/json; charset=utf-8'.
     v2026.09.15.001 - ROLLBACK: passive network inventory disabled by default.
              Reporting hosts fell from 13-16/day to 6-7/day on 2026-09-09, the
              first full day after the .001-.004 releases, and stayed there for a
@@ -401,7 +427,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.09.15.001 CONFIGURATION
+# SHELLKNIGHT v2026.09.24.001 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -594,7 +620,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.09.15.001'
+    Version                  = 'v2026.09.24.001'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -984,7 +1010,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.09.15.001'
+$version     = 'ShellKnight v2026.09.24.001'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -1192,6 +1218,26 @@ $Script:AvDetectionRan = $false
 $inactiveAccounts   = (New-Object 'System.Collections.Generic.List[object]')
 $Script:MinPasswordLen = 0
 
+# Stable device identity - independent of hostname/site so Battlefield
+# can track a machine across renames and site moves. Prefer the hardware
+# UUID (survives OS reinstall); fall back to MachineGuid, then hostname.
+# Computed here, outside and ahead of the Assessment Engine, so an engine abort
+# can no longer send a null device_id (v2026.09.24.001). Seeded with the
+# hostname fallback so it is never $null; assigned via $Script: because the
+# block runs in a child scope, where a bare assignment would be lost.
+$Script:DeviceId = "host:$($env:COMPUTERNAME)"
+Invoke-SafeBlock -Label 'Device identity' -Block {
+    $deviceId = $null
+    try {
+        $hwUuid = (Get-CimInstance Win32_ComputerSystemProduct -ErrorAction Stop).UUID
+        if ($hwUuid -and $hwUuid -notmatch '^(0{8}-0{4}-0{4}-0{4}-0{12}|FFFFFFFF)' ) { $deviceId = $hwUuid.Trim() }
+    } catch { }
+    if (-not $deviceId) {
+        try { $deviceId = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid -ErrorAction Stop).MachineGuid } catch { }
+    }
+    if ($deviceId) { $Script:DeviceId = $deviceId }
+}
+
 if ($Script:Config.AssessmentEngine_Enabled) {
     Invoke-SafeBlock -Label 'Assessment Engine' -Block {
 
@@ -1323,7 +1369,11 @@ if ($Script:Config.AssessmentEngine_Enabled) {
         # back to the CIM class, then to the service + registry, so a module
         # failure can never be mistaken for "no protection". $defRtp stays $null
         # while genuinely unknown so it is distinguishable from a real DISABLED.
+        # $defSigs is seeded because only the success paths below set it: when
+        # every probe failed, reading it unset in the MachineInfo literal threw
+        # under StrictMode and aborted the whole engine (v2026.09.24.001).
         $defRtp = $null
+        $defSigs = 'Unknown'
         try {
             $mp = Get-MpComputerStatus -ErrorAction Stop
             $defRtp  = [bool]($mp.AMServiceEnabled -and $mp.RealTimeProtectionEnabled)
@@ -1359,8 +1409,10 @@ if ($Script:Config.AssessmentEngine_Enabled) {
                               ($defenderRegistered -and $defStatus -ne 'DISABLED')
         $Script:AvDetectionRan = $true
 
-        # Windows Update last install
+        # Windows Update last install. $wuStr is seeded so an empty update
+        # history cannot leave it unset for the MachineInfo literal (StrictMode).
         $wuDate = $null
+        $wuStr  = 'Unknown'
         try {
             $wu = New-Object -ComObject Microsoft.Update.Session -ErrorAction Stop
             $searcher = $wu.CreateUpdateSearcher()
@@ -1380,18 +1432,7 @@ if ($Script:Config.AssessmentEngine_Enabled) {
             -ErrorAction SilentlyContinue |
             Select-Object DisplayName, DisplayVersion, Publisher, InstallDate, InstallLocation, UninstallString)
 
-        # Stable device identity - independent of hostname/site so Battlefield
-        # can track a machine across renames and site moves. Prefer the hardware
-        # UUID (survives OS reinstall); fall back to MachineGuid, then hostname.
-        $deviceId = $null
-        try {
-            $hwUuid = (Get-CimInstance Win32_ComputerSystemProduct -ErrorAction Stop).UUID
-            if ($hwUuid -and $hwUuid -notmatch '^(0{8}-0{4}-0{4}-0{4}-0{12}|FFFFFFFF)' ) { $deviceId = $hwUuid.Trim() }
-        } catch { }
-        if (-not $deviceId) {
-            try { $deviceId = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid -ErrorAction Stop).MachineGuid } catch { }
-        }
-        if (-not $deviceId) { $deviceId = "host:$($env:COMPUTERNAME)" }
+        # Device identity is computed before the engine ($Script:DeviceId).
 
         # Hardware type from chassis (replaces the Datto lazy-fetch; ADR 0008)
         $hwType = 'Unknown'
@@ -1409,7 +1450,7 @@ if ($Script:Config.AssessmentEngine_Enabled) {
 
         # Build machine info
         $Script:MachineInfo = [ordered]@{
-            'Device ID'       = $deviceId
+            'Device ID'       = $Script:DeviceId
             'Hardware Type'   = $hwType
             'Hostname'        = $env:COMPUTERNAME
             'OS'              = "$osName (Build $osBuild)"
@@ -3276,7 +3317,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.09.15.001 - Report"
+Log-Info "  ShellKnight v2026.09.24.001 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -3289,7 +3330,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.09.15.001 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.09.24.001 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -3561,8 +3602,8 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.09.15.001'
-    device_id        = $Script:MachineInfo['Device ID']
+    version          = 'v2026.09.24.001'
+    device_id        = $Script:DeviceId
     hardware_type    = $Script:MachineInfo['Hardware Type']
     site_name        = $SK_SiteName
     hostname         = $env:COMPUTERNAME
@@ -3626,8 +3667,15 @@ if ($Script:Config.BattlefieldEnabled) {
     } else {
         try {
             $headers = @{ 'X-API-Key' = $Script:Config.BattlefieldApiKey }
+            # Send UTF-8 bytes, not the string. Windows PowerShell 5.1 encodes a
+            # string -Body as ISO-8859-1 when -ContentType has no charset, so a
+            # single U+0080..U+00FF character (e.g. in an Event 7045 service
+            # name) went out as an invalid UTF-8 byte and Battlefield rejected
+            # the whole report with 400 (v2026.09.24.001). A byte[] body is
+            # written to the request as-is.
             $resp = Invoke-RestMethod -Uri $Script:Config.BattlefieldURL -Method Post `
-                        -Body $jsonBody -ContentType 'application/json' `
+                        -Body ([System.Text.Encoding]::UTF8.GetBytes($jsonBody)) `
+                        -ContentType 'application/json; charset=utf-8' `
                         -Headers $headers -TimeoutSec 20 -ErrorAction Stop
             # The server may accept the run (returns run_id) or decline it (e.g.
             # frozen enrollment returns {status:'ignored',reason:...}). Under
