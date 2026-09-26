@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.09.25.003  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.09.26.001  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.09.25.003
-    Released   : 2026-09-25
-    Prior      : v2026.09.25.002
+    Version    : v2026.09.26.001
+    Released   : 2026-09-26
+    Prior      : v2026.09.25.003
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,23 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.09.26.001 - Event 7045 allow-list: Claude, ChatGPT/Codex and
+             Malwarebytes. The first run at CustomerF (HOST-F1) scored
+             F (0/100) on 10 IOCs, 8 of them service installs by legitimate
+             software that re-registers its services on every update: Claude's
+             cowork-svc and OpenAI's Codex sandbox service (named "ChatGPT"),
+             both Microsoft Store packages, and three Malwarebytes kernel
+             drivers. Each IOC costs 15 points, capped at 50. Allowed by what
+             cannot be borrowed, never by the service name: the Store apps by
+             package folder, anchored at X:\Program Files\WindowsApps and ending
+             in the publisher ID that the signing certificate determines; the
+             Malwarebytes drivers by service name AND exact driver file in the
+             real system32\drivers directory (new $knownGoodSvcDrivers, stronger
+             than the name-only Avira entries). A service merely named "Claude",
+             another publisher's package, a WindowsApps folder elsewhere, or
+             mbam.sys under another name or directory still raises the IOC.
+             SCORING CHANGE, upward only: devices running these apps lose up to
+             50 fewer points.
     v2026.09.25.003 - OS end of life is Microsoft's date for the build AND the
              edition. The engine looked it up by build number only, one date
              per build, and several were years late: 19045 (Windows 10 22H2)
@@ -497,7 +514,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.09.25.003 CONFIGURATION
+# SHELLKNIGHT v2026.09.26.001 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -690,7 +707,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.09.25.003'
+    Version                  = 'v2026.09.26.001'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -1144,7 +1161,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.09.25.003'
+$version     = 'ShellKnight v2026.09.26.001'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -3067,8 +3084,36 @@ if ($Script:Config.ReportingEngine_Enabled) {
             'windows defender',
             'drivers\\wd\\',             # Defender's driver directory (KslD.sys, WdAiNisDrv.sys)
             'dell\\saremediation',       # Dell factory remediation plugin (BioNTDrv) - field FP 2026-09-08 CUSTA
-            'datto rollback driver'      # Our own RMM rollback driver - field FP 2026-09-08 CUSTA
+            'datto rollback driver',     # Our own RMM rollback driver - field FP 2026-09-08 CUSTA
+            # Microsoft Store (MSIX) apps that register a service on every update:
+            # Claude's cowork-svc and OpenAI's Codex sandbox service (the latter
+            # named "ChatGPT") - field FP 2026-09-26 CustomerF. Keyed on the package
+            # folder, never the service name: WindowsApps is writable only by the
+            # system, and the folder ends in the publisher ID that the package's
+            # signing certificate determines, so another publisher's package, or a
+            # service merely named "Claude", does not match. Anchored at the start
+            # (after the event's leading quote) so a folder named WindowsApps
+            # somewhere else does not match either.
+            '^"?[a-z]:\\program files\\windowsapps\\claude_[^\\"]*__pzs8sxrjxfjjc\\',
+            '^"?[a-z]:\\program files\\windowsapps\\openai\.[^\\"]*__2p2nqsd0c76g0\\'
         ) + @($Script:Config.Svc7045_ExtraPaths | Where-Object { $_ })
+
+        # Drivers that install to a bare system32\DRIVERS path, so there is no
+        # vendor directory to key on. Allowed only when the name AND the exact
+        # driver file both match, which is stronger than a name alone (the Avira
+        # entries above): a service called MBAMProtection anywhere else still
+        # alerts. Malwarebytes re-registers these on engine updates - field FP
+        # 2026-09-26 CustomerF.
+        # Service name -> driver file. Kernel-driver events record the path as
+        # C:\WINDOWS\system32\drivers\x.sys, \SystemRoot\System32\drivers\x.sys,
+        # \??\C:\..., or a bare System32\drivers\x.sys; $driverDir accepts those
+        # and nothing else, so a copy under C:\evil\system32\drivers\ still alerts.
+        $knownGoodSvcDrivers = @{
+            'MBAMProtection'             = 'mbam.sys'
+            'MBAMWebProtection'          = 'mwac.sys'
+            'Malwarebytes Anti-Exploit'  = 'mbae.sys'
+        }
+        $driverDir = '^(\\\?\?\\)?([a-z]:\\windows\\|\\systemroot\\)?system32\\drivers\\'
 
         $svcGroups = @{}
         foreach ($evt in $svcEvents) {
@@ -3076,6 +3121,8 @@ if ($Script:Config.ReportingEngine_Enabled) {
             $svcPath = $evt.Properties[1].Value
             $svcAcct = $evt.Properties[4].Value
             if ($knownGoodSvcs.Contains($svcName)) { continue }
+            if ($knownGoodSvcDrivers.ContainsKey($svcName) -and
+                "$svcPath".Trim().Trim('"') -match ($driverDir + [regex]::Escape($knownGoodSvcDrivers[$svcName]) + '$')) { continue }
             # Path-based whitelist - skip events from known-good vendor install paths
             $isKnownGoodPath = $knownGoodSvcPaths | Where-Object { $svcPath -match $_ }
             if ($isKnownGoodPath) { continue }
@@ -3472,7 +3519,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.09.25.003 - Report"
+Log-Info "  ShellKnight v2026.09.26.001 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -3485,7 +3532,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.09.25.003 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.09.26.001 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -3757,7 +3804,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.09.25.003'
+    version          = 'v2026.09.26.001'
     device_id        = $Script:DeviceId
     hardware_type    = $Script:MachineInfo['Hardware Type']
     site_name        = $SK_SiteName
