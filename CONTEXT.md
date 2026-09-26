@@ -67,6 +67,14 @@ The per-device score ShellKnight computes during a Run, 0 to 100, published on t
 a letter grade. Scoped to one machine and one Run. It is NOT the number the customer sees in a
 report; that is the Tenant Security Score.
 
+### OS End of Life
+
+The date Microsoft stops servicing a device's Windows release, for that build AND edition: Home/Pro,
+Enterprise/Education, LTSB/LTSC, IoT Enterprise LTSC or Server. Reported as `os_eol`; once passed,
+it costs the Device Security Score 20 points. It is Microsoft's end-of-servicing date. It is NOT
+moved by an Extended Security Updates licence: Windows 10 is end of life from 2025-10-14 with or
+without ESU. See [ADR 0010](docs/adr/0010-os-end-of-life-by-edition.md).
+
 ### Tenant Security Score
 
 The single customer-level number, 0 to 100 internally, presented to the customer as a letter

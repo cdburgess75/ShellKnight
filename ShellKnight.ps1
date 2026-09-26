@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.09.25.002  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.09.25.003  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.09.25.002
+    Version    : v2026.09.25.003
     Released   : 2026-09-25
-    Prior      : v2026.09.25.001
+    Prior      : v2026.09.25.002
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,30 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.09.25.003 - OS end of life is Microsoft's date for the build AND the
+             edition. The engine looked it up by build number only, one date
+             per build, and several were years late: 19045 (Windows 10 22H2)
+             read 2030-10-14 for 2025-10-14, 22621 and 22631 (Windows 11 22H2
+             and 23H2) read 2027 and 2028, 26100 read 2029-10-14. And a build
+             is often several products: Home/Pro and Enterprise/Education end
+             on different days, and 14393, 17763, 19044 and 26100 are also
+             LTSB/LTSC or Windows Server, which run for years longer. New
+             Get-OsEolDate takes the edition from the caption (Home/Pro,
+             Enterprise/Education, LTSB/LTSC, IoT LTSC, Server) and holds every
+             date from Microsoft Learn. A caption it cannot place (localized,
+             say) gets a date only if it holds for every edition the machine
+             could be; otherwise 'Unknown', which is not scored (ADR 0009).
+             New builds: 25398 (Server 23H2), 26200 (Windows 11 25H2) and
+             28000 (26H1). os_eol keeps its three forms.
+             Windows 10 ESU does not extend end of life: a Windows 10 device is
+             END OF LIFE since 2025-10-14, enrolled or not (ADR 0010).
+             SCORING CHANGE. More devices take the OS EOL -20 from the first
+             run: Windows 10 22H2 and 11 22H2 (all editions), 11 23H2 Home/Pro,
+             the GA releases of 10 21H2, 1809, 1607 and 11 21H2, and Server
+             23H2 (25398, which the old table did not know). Windows 11
+             24H2 Home/Pro follows on 2026-10-13 and 23H2 Enterprise/Education
+             on 2026-11-10. Enterprise LTSC 2021 and IoT LTSC keep their later
+             dates, where the old table would have ended them on 2026-10-13.
     v2026.09.25.002 - An unknown password minimum length is no longer scored or
              reported as 0. $Script:MinPasswordLen started at 0, and only the
              engine's 'Password policy' check set it, from 'net accounts'. So
@@ -473,7 +497,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.09.25.002 CONFIGURATION
+# SHELLKNIGHT v2026.09.25.003 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -666,7 +690,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.09.25.002'
+    Version                  = 'v2026.09.25.003'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -954,6 +978,70 @@ function ConvertTo-BiosDate {
     return (Get-Date)   # unknown age; scores treat this as a new machine
 }
 
+# Microsoft's end-of-servicing date for this Windows build AND edition, or
+# $null when it is not known. The build alone is not enough: Home/Pro and
+# Enterprise/Education reach end of servicing on different days, and 7601,
+# 9200, 9600, 10240, 14393, 17763, 19044 and 26100 are each several products
+# (client GA, LTSB/LTSC, IoT LTSC, Server) with dates years apart. Until
+# v2026.09.25.003 the table was keyed by build only and used one date per
+# build, some of them years past Microsoft's (19045 read 2030 for 2025).
+# Dates are the last Patch Tuesday of servicing, from Microsoft Learn release
+# health and the lifecycle pages (whose tables show the next day, 6:59:59 AM).
+# GA versions: end of servicing. LTSB/LTSC and Server: end of extended
+# support. Windows 10 ESU does not extend a date (ADR 0010).
+# The edition comes from the English caption. A caption this cannot place
+# (localized, or an edition not listed for the build) gets a date only when it
+# holds for every edition the machine could be: all past, or all the same.
+# Otherwise $null ('Unknown'), which is not scored (ADR 0009).
+function Get-OsEolDate {
+    param([string]$Caption, [string]$Build, [datetime]$Now = (Get-Date))
+    # Order matters: an LTSC caption also says Enterprise, and 'Pro Education'
+    # is on the Home/Pro timeline, so Pro is tested before Education.
+    $family = if     ($Caption -match 'Server')                   { 'Server' }
+              elseif ($Caption -match 'LTS[BC]')                  { if ($Caption -match 'IoT') { 'IoTLTSC' } else { 'LTSC' } }
+              elseif ($Caption -match '\bPro\b|\bHome\b|\bSE\b')  { 'HomePro' }
+              elseif ($Caption -match 'Enterprise|Education')     { 'EntEdu' }
+              else { $null }
+    # HomePro: Home, Pro, Pro Education, Pro for Workstations, SE.
+    # EntEdu:  Enterprise, Education, IoT Enterprise (GA), Enterprise multi-session.
+    $eol = @{
+        '7601'  = @{ HomePro = '2020-01-14'; EntEdu = '2020-01-14'; Server = '2020-01-14' }  # Windows 7 SP1 / Server 2008 R2
+        '9200'  = @{ HomePro = '2016-01-12'; EntEdu = '2016-01-12'; Server = '2023-10-10' }  # Windows 8 / Server 2012
+        '9600'  = @{ HomePro = '2023-01-10'; EntEdu = '2023-01-10'; Server = '2023-10-10' }  # Windows 8.1 / Server 2012 R2
+        '10240' = @{ HomePro = '2017-05-09'; EntEdu = '2017-05-09'; LTSC = '2025-10-14' }    # 10 1507 / 2015 LTSB
+        '10586' = @{ HomePro = '2017-10-10'; EntEdu = '2017-10-10' }                         # 10 1511
+        '14393' = @{ HomePro = '2018-04-10'; EntEdu = '2019-04-09'; LTSC = '2026-10-13'; IoTLTSC = '2026-10-13'; Server = '2027-01-12' }  # 10 1607 / 2016 LTSB / Server 2016
+        '15063' = @{ HomePro = '2018-10-09'; EntEdu = '2019-10-08' }                         # 10 1703
+        '16299' = @{ HomePro = '2019-04-09'; EntEdu = '2020-10-13' }                         # 10 1709
+        '17134' = @{ HomePro = '2019-11-12'; EntEdu = '2021-05-11' }                         # 10 1803
+        '17763' = @{ HomePro = '2020-11-10'; EntEdu = '2021-05-11'; LTSC = '2029-01-09'; IoTLTSC = '2029-01-09'; Server = '2029-01-09' }  # 10 1809 / LTSC 2019 / Server 2019
+        '18362' = @{ HomePro = '2020-12-08'; EntEdu = '2020-12-08' }                         # 10 1903
+        '18363' = @{ HomePro = '2021-05-11'; EntEdu = '2022-05-10' }                         # 10 1909
+        '19041' = @{ HomePro = '2021-12-14'; EntEdu = '2021-12-14' }                         # 10 2004
+        '19042' = @{ HomePro = '2022-05-10'; EntEdu = '2023-05-09' }                         # 10 20H2
+        '19043' = @{ HomePro = '2022-12-13'; EntEdu = '2022-12-13' }                         # 10 21H1
+        '19044' = @{ HomePro = '2023-06-13'; EntEdu = '2024-06-11'; LTSC = '2027-01-12'; IoTLTSC = '2032-01-13' }  # 10 21H2 / LTSC 2021
+        '19045' = @{ HomePro = '2025-10-14'; EntEdu = '2025-10-14' }                         # 10 22H2 (ESU: ADR 0010)
+        '20348' = @{ Server = '2031-10-14' }                                                 # Server 2022
+        '22000' = @{ HomePro = '2023-10-10'; EntEdu = '2024-10-08' }                         # 11 21H2
+        '22621' = @{ HomePro = '2024-10-08'; EntEdu = '2025-10-14' }                         # 11 22H2
+        '22631' = @{ HomePro = '2025-11-11'; EntEdu = '2026-11-10' }                         # 11 23H2
+        '25398' = @{ Server = '2025-10-24' }                                                 # Server 23H2 (Annual Channel)
+        '26100' = @{ HomePro = '2026-10-13'; EntEdu = '2027-10-12'; LTSC = '2029-10-09'; IoTLTSC = '2034-10-10'; Server = '2034-11-14' }  # 11 24H2 / LTSC 2024 / Server 2025
+        '26200' = @{ HomePro = '2027-10-12'; EntEdu = '2028-10-10' }                         # 11 25H2
+        '28000' = @{ HomePro = '2028-03-14'; EntEdu = '2029-03-13' }                         # 11 26H1
+    }
+    $row = $eol[$Build]
+    if (-not $row) { return $null }
+    if ($family -and $row.ContainsKey($family)) { return [datetime]$row[$family] }
+    # Not placed: every date this machine could have, on its side of the
+    # client/server line (drawn as the engine draws HWInfo.IsServer).
+    $isServer = $Caption -match 'Server'
+    $dates = @($row.Keys | Where-Object { ($_ -eq 'Server') -eq $isServer } | ForEach-Object { [datetime]$row[$_] } | Sort-Object)
+    if ($dates.Count -and ($Now -gt $dates[-1] -or $dates[0] -eq $dates[-1])) { return $dates[-1] }
+    return $null
+}
+
 # Get folder size in bytes
 function Get-FolderSizeBytes {
     param([string]$Path)
@@ -1056,7 +1144,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.09.25.002'
+$version     = 'ShellKnight v2026.09.25.003'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -1345,21 +1433,8 @@ if ($Script:Config.AssessmentEngine_Enabled) {
             } catch { }
         }
 
-        # OS EOL check
-        $eolDates = @{
-            '7601'  = [datetime]'2020-01-14'; '9200' = [datetime]'2023-10-10'
-            '9600'  = [datetime]'2023-10-10'; '10240'= [datetime]'2025-10-14'
-            '10586' = [datetime]'2017-10-10'; '14393'= [datetime]'2027-01-12'
-            '15063' = [datetime]'2018-10-09'; '16299'= [datetime]'2019-04-09'
-            '17134' = [datetime]'2019-11-12'; '17763'= [datetime]'2029-01-09'
-            '18362' = [datetime]'2020-05-12'; '18363'= [datetime]'2021-05-11'
-            '19041' = [datetime]'2025-10-14'; '19042'= [datetime]'2025-10-14'
-            '19043' = [datetime]'2025-10-14'; '19044'= [datetime]'2026-10-13'
-            '19045' = [datetime]'2030-10-14'; '20348'= [datetime]'2031-10-14'
-            '22000' = [datetime]'2026-10-14'; '22621'= [datetime]'2027-10-12'
-            '22631' = [datetime]'2028-10-10'; '26100'= [datetime]'2029-10-14'
-        }
-        $eolDate   = $eolDates[$osBuild]
+        # OS EOL check: Microsoft's date for this build and edition
+        $eolDate   = Get-OsEolDate -Caption $osName -Build $osBuild
         $eolStr    = if ($eolDate) {
             if ((Get-Date) -gt $eolDate) { $Script:OsEolWarn = $true; "END OF LIFE (since $($eolDate.ToString('yyyy-MM-dd')))"}
             else { "Supported until $($eolDate.ToString('yyyy-MM-dd'))" }
@@ -3397,7 +3472,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.09.25.002 - Report"
+Log-Info "  ShellKnight v2026.09.25.003 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -3410,7 +3485,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.09.25.002 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.09.25.003 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -3682,7 +3757,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.09.25.002'
+    version          = 'v2026.09.25.003'
     device_id        = $Script:DeviceId
     hardware_type    = $Script:MachineInfo['Hardware Type']
     site_name        = $SK_SiteName
