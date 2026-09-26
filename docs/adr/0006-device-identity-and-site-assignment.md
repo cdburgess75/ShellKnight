@@ -31,7 +31,7 @@ We want a machine to have one identity for its whole life, and we want the flexi
 - New sites can be created on the fly during a move.
 
 **Bad:**
-- Manual-wins means a device can display a site that disagrees with the key it reports under. That's intentional but can look odd ("why is this box reporting with Customer B's key but shown under Clinic B?"). The device_id + key are both visible for auditing.
+- Manual-wins means a device can display a site that disagrees with the key it reports under. That's intentional but can look odd ("why is this box reporting with one customer's key but shown under another?"). The device_id + key are both visible for auditing.
 - Hardware UUID is blank or duplicated on some cheap/whitebox hardware — the MachineGuid fallback covers most of it, but a truly duplicated UUID would merge two machines. Rare; can be detected by hostname mismatch on a device_id.
 - Imaging/sysprep regenerates MachineGuid (not the hardware UUID) — for hardware-UUID machines this is a non-issue; for fallback machines a re-image looks like a new device.
 - Migration created interim `host:<name>` device rows; the first report from ShellKnight ≥ v2026.07.03.014 (real hardware UUID) creates the canonical device, leaving the `host:` row stale until pruned.
