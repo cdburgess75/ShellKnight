@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.09.25.001  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.09.25.002  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.09.25.001
+    Version    : v2026.09.25.002
     Released   : 2026-09-25
-    Prior      : v2026.09.24.001
+    Prior      : v2026.09.25.001
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,21 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.09.25.002 - An unknown password minimum length is no longer scored or
+             reported as 0. $Script:MinPasswordLen started at 0, and only the
+             engine's 'Password policy' check set it, from 'net accounts'. So
+             when the engine aborted or was disabled, or 'net accounts' gave
+             no 'Minimum password length' value, the scoring took 20 points
+             and the CIS block added the High finding "Password minimum
+             length is 0 (CIS 1.1.1)", which Battlefield alerts on and maps
+             to a VULN. That is a collection failure scored as a
+             vulnerability, which ADR 0009 rules out. It now starts at $null;
+             the scoring and CIS 1.1.1 skip it when $null, and the log says
+             the length is unknown. A length that was read, including a real
+             0, is scored and reported exactly as before.
+             New payload field password_min_length: the length as a number,
+             or null when it was not read, so Battlefield can tell "unknown"
+             from "8 or more" (neither sends a finding).
     v2026.09.25.001 - Assessment Engine results now reach the report and the
              score. Invoke-SafeBlock runs its block as a child scope
              (& $Block). The engine set $avProduct, $edrProduct, $defStatus,
@@ -458,7 +473,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.09.25.001 CONFIGURATION
+# SHELLKNIGHT v2026.09.25.002 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -651,7 +666,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.09.25.001'
+    Version                  = 'v2026.09.25.002'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -1041,7 +1056,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.09.25.001'
+$version     = 'ShellKnight v2026.09.25.002'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -1250,7 +1265,12 @@ $Script:WuLastWarn    = $false
 $Script:HasActiveAv    = $false
 $Script:AvDetectionRan = $false
 $inactiveAccounts   = (New-Object 'System.Collections.Generic.List[object]')
-$Script:MinPasswordLen = 0
+# $null until the engine's password check reads a length from 'net accounts'.
+# Unknown is neither scored nor reported (ADR 0009). Until v2026.09.25.002 this
+# started at 0, so an engine that aborted or was disabled, or a 'net accounts'
+# with no 'Minimum password length' value, was scored -20 and reported as a High
+# CIS 1.1.1 finding, which Battlefield alerts on.
+$Script:MinPasswordLen = $null
 
 # Stable device identity - independent of hostname/site so Battlefield
 # can track a machine across renames and site moves. Prefer the hardware
@@ -1555,13 +1575,16 @@ if ($Script:Config.AssessmentEngine_Enabled) {
         Invoke-SafeBlock -Label 'Password policy' -Block {
             $passOut = & net accounts 2>$null
             $minLenLine = $passOut | Where-Object { $_ -match 'Minimum password length' }
-            if ($minLenLine) {
-                $Script:MinPasswordLen = [int]($minLenLine -replace '[^\d]','')
+            # Set only from a number actually read: [int]'' is 0, and a length
+            # we could not read must stay $null (unknown), not become 0.
+            $minLenStr  = "$minLenLine" -replace '[^\d]',''
+            if ($minLenStr) {
+                $Script:MinPasswordLen = [int]$minLenStr
                 if ($Script:MinPasswordLen -eq 0)      { Log-Warn "Password policy: minimum length is 0  -  recommend 12 or more" }
                 elseif ($Script:MinPasswordLen -lt 8)  { Log-Warn "Password policy: minimum length is $Script:MinPasswordLen  -  recommend 12 or more" }
                 elseif ($Script:MinPasswordLen -lt 12) { Log-Warn "Password policy: minimum length is $Script:MinPasswordLen  -  recommend 12 or more" }
                 else { Log-Summary "Password policy: minimum length $Script:MinPasswordLen (OK)" }
-            }
+            } else { Log-Info "Password policy: minimum length unknown (no value from net accounts)  -  not scored" }
         }
 
         # Inactive accounts
@@ -3215,8 +3238,11 @@ if ($Script:Config.ReportingEngine_Enabled) {
         $cisIssues = 0
         Log-Info '--- CIS Benchmark Lite (Level 1) ---'
 
-        # 1.1.1 Password minimum length
-        if ($Script:MinPasswordLen -lt 8) {
+        # 1.1.1 Password minimum length. $null means the engine never read it,
+        # which is not a finding (ADR 0009). Note $null -lt 8 is $true.
+        if ($null -eq $Script:MinPasswordLen) {
+            Log-Info "  [CIS 1.1.1] Password minimum length: unknown  -  not checked"
+        } elseif ($Script:MinPasswordLen -lt 8) {
             Log-Warn "  [CIS 1.1.1] Password minimum length is $Script:MinPasswordLen  -  recommend 8+ (Level 1)"
             Add-Finding -Severity High -Title "Password minimum length is $Script:MinPasswordLen (CIS 1.1.1)" -Action 'Set MinimumPasswordLength >= 8 via domain GPO (local secedit is overridden on domain members)'
             $cisIssues++
@@ -3319,9 +3345,12 @@ try { $lmSc = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Na
       if ($null -eq $lmSc -or $lmSc -lt 3) { $Script:SecurityScore -= 15 } } catch { }
 try { $fwSc = @(Get-NetFirewallProfile -ErrorAction Stop | Where-Object { $_.Enabled -eq $false })
       if ($fwSc.Count -gt 0) { $Script:SecurityScore -= 15 } } catch { }
-if ($Script:MinPasswordLen -eq 0)    { $Script:SecurityScore -= 20 }
-elseif ($Script:MinPasswordLen -lt 8){ $Script:SecurityScore -= 10 }
-elseif ($Script:MinPasswordLen -lt 12){ $Script:SecurityScore -= 5 }
+# Only a length the engine read is scored; $null (unknown) costs nothing.
+if ($null -ne $Script:MinPasswordLen) {
+    if ($Script:MinPasswordLen -eq 0)     { $Script:SecurityScore -= 20 }
+    elseif ($Script:MinPasswordLen -lt 8) { $Script:SecurityScore -= 10 }
+    elseif ($Script:MinPasswordLen -lt 12){ $Script:SecurityScore -= 5 }
+}
 $Script:SecurityScore = [math]::Max(0, $Script:SecurityScore)
 
 # Performance Score
@@ -3368,7 +3397,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.09.25.001 - Report"
+Log-Info "  ShellKnight v2026.09.25.002 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -3381,7 +3410,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.09.25.001 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.09.25.002 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -3653,7 +3682,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.09.25.001'
+    version          = 'v2026.09.25.002'
     device_id        = $Script:DeviceId
     hardware_type    = $Script:MachineInfo['Hardware Type']
     site_name        = $SK_SiteName
@@ -3678,6 +3707,7 @@ $jsonData = [ordered]@{
     defender         = $Script:MachineInfo['Defender']
     defender_sigs    = $Script:MachineInfo['Defender Sigs']
     last_wu_install  = $Script:MachineInfo['Last WU Install']
+    password_min_length = $Script:MinPasswordLen    # null when not read, never a stand-in 0
     domain           = $Script:MachineInfo['Domain/Workgroup']
     security_score   = $Script:SecurityScore
     security_grade   = $secGrade

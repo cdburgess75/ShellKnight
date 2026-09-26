@@ -13,11 +13,20 @@
     Update penalties never applied. MachineInfo, built inside the block, was
     right the whole time, which is why nobody noticed from the log.
 
-    This runs the whole of Phase 2, the security scoring, and the payload's
-    machine fields, all verbatim from ShellKnight.ps1. They run under the
-    script's own StrictMode 2 / SilentlyContinue settings, with the Windows
-    cmdlets replaced by mocks, so the test runs on the CI Linux runner. It does
-    not replace a real Windows run.
+    Up to v2026.09.25.001 the password minimum length also started at 0, and
+    only the engine's 'net accounts' check set it. An engine that aborted or
+    was disabled, or a 'net accounts' with no length, was therefore scored -20
+    and reported as the High finding 'Password minimum length is 0 (CIS
+    1.1.1)', which Battlefield alerts on. An unknown length must cost nothing
+    and raise nothing (ADR 0009), and the payload's password_min_length must
+    say null for it, not 0.
+
+    This runs the whole of Phase 2, the CIS Benchmark block, the security
+    scoring, and the payload's machine fields, all verbatim from
+    ShellKnight.ps1. They run under the script's own StrictMode 2 /
+    SilentlyContinue settings, with the Windows cmdlets replaced by mocks, so
+    the test runs on the CI Linux runner. It does not replace a real Windows
+    run.
 
     It also parses the whole script and fails on the general form of the bug:
     a variable assigned bare inside an Invoke-SafeBlock body and then read
@@ -47,11 +56,13 @@ $biosDate  = Get-Section '(?ms)^function ConvertTo-BiosDate \{.*?^\}' 'ConvertTo
 # Phase 2 from the MachineInfo reset to the end of the engine's if/else.
 $phase2    = Get-Section ('(?ms)^\$Script:MachineInfo = \[ordered\]@\{\}\s*$.*?' +
                           '^    Log-Info "Assessment Engine  -  disabled"\s*^\}') 'Phase 2 (the Assessment Engine)'
+# The Reporting Engine's CIS block, which raises the CIS 1.1.1 finding.
+$cis       = Get-Section "(?ms)^    Invoke-SafeBlock -Label 'CIS Benchmark' -Block \{.*?^    \}" 'CIS Benchmark block'
 $scoring   = Get-Section ('(?ms)^\$Script:SecurityScore = 100\s*$.*?' +
                           '^\$Script:SecurityScore = \[math\]::Max\(0, \$Script:SecurityScore\)') 'Security scoring'
 # The payload's machine fields, evaluated as a hashtable of their own.
-$fields    = [regex]::Matches($source, '(?m)^    (bitlocker|os_eol|antivirus|edr|defender)\s+=.*$')
-if ($fields.Count -ne 5) { throw "expected 5 payload fields (bitlocker, os_eol, antivirus, edr, defender), found $($fields.Count)" }
+$fields    = [regex]::Matches($source, '(?m)^    (bitlocker|os_eol|antivirus|edr|defender|password_min_length)\s+=.*$')
+if ($fields.Count -ne 6) { throw "expected 6 payload fields (bitlocker, os_eol, antivirus, edr, defender, password_min_length), found $($fields.Count)" }
 $payloadSrc = "[ordered]@{`n" + (($fields | ForEach-Object { $_.Value }) -join "`n") + "`n}"
 
 # --- Mocks. Functions take precedence over cmdlets of the same name. ---------
@@ -151,7 +162,25 @@ function New-Object {
 # so the only deductions left are the ones under test.
 function Get-WindowsOptionalFeature { param([switch]$Online, $FeatureName, $ErrorAction) $null }
 function Get-LocalUser { param($Name, $ErrorAction) @() }
-function net { 'Minimum password length                       14' }
+# 'net accounts' as English Windows prints it, with the scenario's length.
+# Net 'empty': no output at all. 'no-length-line': the rest of it without the
+# length line (a localized Windows prints no English 'Minimum password length').
+function net {
+    $s = $Script:S
+    if ($s.Net -eq 'empty') { return }
+    $out = @(
+        'Force user logoff how long after time expires?:       Never'
+        'Minimum password age (days):                          0'
+        'Maximum password age (days):                          42'
+        "Minimum password length:                              $($s.PwLen)"
+        'Length of password history maintained:                None'
+        'Lockout threshold:                                    Never'
+        'Computer role:                                        WORKSTATION'
+        'The command completed successfully.'
+    )
+    if ($s.Net -eq 'no-length-line') { $out = @($out | Where-Object { $_ -notmatch 'Minimum password length' }) }
+    $out
+}
 function Get-SmbServerConfiguration { param($ErrorAction) [pscustomobject]@{ EnableSMB1Protocol = $false } }
 function Get-NetFirewallProfile { param($ErrorAction) @([pscustomobject]@{ Profile = 'Domain'; Enabled = $true }) }
 
@@ -160,14 +189,16 @@ Invoke-Expression $biosDate
 
 # --- Scenarios --------------------------------------------------------------
 # The machine each mock describes, and what the payload and the score must say.
-# Penalty: points the four rules under test must take off 100 (AV -25, OS EOL
-# -20, BitLocker -15, Windows Update -15). $null for Av/Edr/Def means the
-# engine did not run, so the payload has no value to report.
+# Penalty: points the five rules under test must take off 100 (AV -25, OS EOL
+# -20, BitLocker -15, Windows Update -15, password length -20/-10/-5). $null
+# for Av/Edr/Def means the engine did not run, so the payload has no value to
+# report. Pw is the CIS 1.1.1 finding's title, or $null for none. Len is the
+# payload's password_min_length: the length read, or $null when it was not.
 $healthy = @{ Engine = 'runs'; Caption = 'Microsoft Windows 11 Pro'; Build = '22631'; BitLocker = 'On'; WuDays = 6
-              AvList = @('Windows Defender'); Defender = 'active'; Services = @() }
+              AvList = @('Windows Defender'); Defender = 'active'; Services = @(); Net = 'ok'; PwLen = 14 }
 function New-Scenario([string]$Name, [hashtable]$Machine, [hashtable]$Expect) {
     $m = $healthy.Clone(); foreach ($k in $Machine.Keys) { $m[$k] = $Machine[$k] }
-    $e = @{ Av = 'Windows Defender'; Edr = 'None detected'; Def = 'Active'; Penalty = 0; Finding = $false }
+    $e = @{ Av = 'Windows Defender'; Edr = 'None detected'; Def = 'Active'; Penalty = 0; Finding = $false; Pw = $null; Len = 14 }
     foreach ($k in $Expect.Keys) { $e[$k] = $Expect[$k] }
     $m.Name = $Name; $m.Expect = $e; $m
 }
@@ -187,11 +218,21 @@ $scenarios = @(
     New-Scenario 'no-av'                 @{ AvList = @(); Defender = 'removed' } @{ Av = 'NONE DETECTED'; Def = 'Unknown'; Penalty = 25 }
     # Defender off and nothing else: -25 once, not -25 and -20.
     New-Scenario 'defender-off-no-av'    @{ Defender = 'off' }                 @{ Av = 'Windows Defender (status DISABLED)'; Def = 'DISABLED'; Penalty = 25 }
-    # The engine produced nothing, so none of the four rules may fire. The 20
-    # taken here is the password-length rule, which reads 0 when the engine's
-    # password check never ran. That is an existing flaw and not under test.
-    New-Scenario 'engine-aborts'         @{ Engine = 'aborts'; BitLocker = 'Off'; WuDays = 45 } @{ Av = $null; Edr = $null; Def = $null; Penalty = 20 }
-    New-Scenario 'engine-disabled'       @{ Engine = 'disabled'; BitLocker = 'Off'; WuDays = 45 } @{ Av = $null; Edr = $null; Def = $null; Penalty = 20 }
+    # A password length that was read is scored and reported as before. A real
+    # 0 keeps the exact title Battlefield maps to 'password-policy-blank'.
+    New-Scenario 'password-length-0'     @{ PwLen = 0 }                        @{ Penalty = 20; Pw = 'Password minimum length is 0 (CIS 1.1.1)'; Len = 0 }
+    New-Scenario 'password-length-6'     @{ PwLen = 6 }                        @{ Penalty = 10; Pw = 'Password minimum length is 6 (CIS 1.1.1)'; Len = 6 }
+    New-Scenario 'password-length-10'    @{ PwLen = 10 }                       @{ Penalty = 5; Len = 10 }
+    # One that was not read is unknown: no penalty, no finding, null in the
+    # payload (ADR 0009).
+    New-Scenario 'net-accounts-empty'    @{ Net = 'empty' }                    @{ Len = $null }
+    New-Scenario 'net-accounts-no-length' @{ Net = 'no-length-line' }          @{ Len = $null }
+    # A length line with no number: [int]'' is 0, so this must not parse as 0.
+    New-Scenario 'net-accounts-no-number' @{ PwLen = '' }                      @{ Len = $null }
+    # The engine produced nothing, so none of the five rules may fire, though
+    # the machine has every problem they look for.
+    New-Scenario 'engine-aborts'         @{ Engine = 'aborts'; BitLocker = 'Off'; WuDays = 45; PwLen = 0 } @{ Av = $null; Edr = $null; Def = $null; Len = $null }
+    New-Scenario 'engine-disabled'       @{ Engine = 'disabled'; BitLocker = 'Off'; WuDays = 45; PwLen = 0 } @{ Av = $null; Edr = $null; Def = $null; Len = $null }
 )
 
 $failures = 0
@@ -217,11 +258,14 @@ foreach ($sc in $scenarios) {
     $ErrorActionPreference = 'SilentlyContinue'   # as ShellKnight.ps1 runs
     try {
         Invoke-Expression $phase2
+        Invoke-Expression $cis
         Invoke-Expression $scoring
         $payload = Invoke-Expression $payloadSrc
     } finally { $ErrorActionPreference = 'Stop' }
 
-    $skipped = @($Script:Logged | Where-Object { $_ -match 'skipped' })
+    # The CIS block may stop at a check after 1.1.1 whose mock throws (2.9, with
+    # Defender removed). Only 1.1.1 is under test; it is checked below.
+    $skipped = @($Script:Logged | Where-Object { $_ -match 'skipped' -and $_ -notmatch '^CIS Benchmark skipped' })
     if ($sc.Engine -eq 'runs' -and $skipped.Count) { Fail $label "a block aborted: $($skipped -join ' | ')" }
     if ($sc.Engine -eq 'aborts' -and -not @($skipped | Where-Object { $_ -match '^Assessment Engine skipped' }).Count) {
         Fail $label 'expected the engine to abort in this scenario (test harness check)'
@@ -247,8 +291,21 @@ foreach ($sc in $scenarios) {
     $blFinding = @($Script:Findings | Where-Object { $_.Title -like 'BitLocker not enabled*' }).Count -gt 0
     if ($blFinding -ne $x.Finding) { Fail $label "BitLocker finding present: $blFinding, expected $($x.Finding)" }
 
+    $pwFindings = @($Script:Findings | Where-Object { $_.Title -like '*(CIS 1.1.1)' })
+    # Without this, a CIS block that never reached 1.1.1 would pass as "no finding".
+    if (-not @($Script:Logged | Where-Object { $_ -match '\[CIS 1\.1\.1\]' }).Count -and -not $pwFindings.Count) {
+        Fail $label 'the CIS 1.1.1 check did not run (test harness check)'
+    }
+    $pw = if ($pwFindings.Count) { ($pwFindings | ForEach-Object { $_.Title }) -join ' | ' } else { $null }
+    if ($pw -ne $x.Pw -or ($null -eq $pw) -ne ($null -eq $x.Pw)) { Fail $label "CIS 1.1.1 finding = $(Show $pw), expected $(Show $x.Pw)" }
+
+    # As Battlefield receives it: a JSON number when read, null when not.
+    $lenJson  = @{ password_min_length = $payload['password_min_length'] } | ConvertTo-Json -Compress
+    $wantJson = if ($null -eq $x.Len) { '{"password_min_length":null}' } else { "{`"password_min_length`":$($x.Len)}" }
+    if ($lenJson -ne $wantJson) { Fail $label "payload $lenJson, expected $wantJson" }
+
     if ($failures -eq $before) {
-        Say "  ok    $label  -  score $($Script:SecurityScore); antivirus=$(Show $payload['antivirus']) edr=$(Show $payload['edr']) defender=$(Show $payload['defender'])" Green
+        Say "  ok    $label  -  score $($Script:SecurityScore); antivirus=$(Show $payload['antivirus']) edr=$(Show $payload['edr']) defender=$(Show $payload['defender']) password_min_length=$(Show $payload['password_min_length'])" Green
     }
 }
 
