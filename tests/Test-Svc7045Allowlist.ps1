@@ -142,12 +142,12 @@ foreach ($c in $cases) {
 }
 
 # CustomerF's eight together, plus one unknown: exactly one IOC.
-$CustomerF = @($cases | Select-Object -First 8 | ForEach-Object { New-SvcEvent $_[0] $_[1] }) + @(New-SvcEvent 'UpdateHelperSvc' 'C:\Users\Public\helper.exe')
+$customerf = @($cases | Select-Object -First 8 | ForEach-Object { New-SvcEvent $_[0] $_[1] }) + @(New-SvcEvent 'UpdateHelperSvc' 'C:\Users\Public\helper.exe')
 try {
-    $got = Invoke-Check $CustomerF
-    if ($got -ne 1) { Fail 'CustomerF-run' "IOCs $got, expected 1 (the unknown service only)" }
+    $got = Invoke-Check $customerf
+    if ($got -ne 1) { Fail 'customerf-run' "IOCs $got, expected 1 (the unknown service only)" }
     else { Say '  ok    CustomerF''s eight events plus one unknown service -> 1 IOC' Green }
-} catch { Fail 'CustomerF-run' $_.Exception.Message }
+} catch { Fail 'customerf-run' $_.Exception.Message }
 
 Say ''
 if ($failures -gt 0) {
