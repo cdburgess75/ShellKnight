@@ -34,7 +34,7 @@
 
 .CHANGELOG
     v2026.09.26.002 - A value that is not set no longer stops a check. A real
-             run on HOST-A1 (Windows 11 Pro 22621, 2026-09-26) logged
+             run on HOST-A3 (Windows 11 Pro 22621, 2026-09-26) logged
              eight Invoke-SafeBlock skips, each dropping the rest of its
              block. Most checks read (Get-ItemProperty $key -Name X
              -ErrorAction SilentlyContinue).X; where X is not set, Windows'
@@ -1238,7 +1238,7 @@ function Invoke-SafeBlock {
 # and reading .X off nothing is "The property 'X' cannot be found on this
 # object". Invoke-SafeBlock then logs '<label> skipped' and the rest of the
 # block never runs. Most policy values are absent until someone sets them, so
-# that was the usual case, not the edge (HOST-A1 2026-09-26: LLMNR, LAN
+# that was the usual case, not the edge (HOST-A3 2026-09-26: LLMNR, LAN
 # Manager auth, CIS Benchmark, PS script block audit, Credential exposure).
 # The caller decides what an absent value means: Windows' default, or
 # unknown. Neither is scored as a vulnerability (ADR 0009).
@@ -1272,7 +1272,7 @@ function Get-LocalAdminAdsPath {
 #
 # Get-LocalGroupMember fails for the whole group when it cannot resolve one
 # member - an orphaned domain SID, an Entra ID member, or a domain the box
-# cannot reach. HOST-A1 2026-09-26: 'An unspecified error occurred: error
+# cannot reach. HOST-A3 2026-09-26: 'An unspecified error occurred: error
 # code = 1789' (the trust relationship failed). The WinNT provider is the
 # fallback. $null means unknown: no finding either way.
 function Get-LocalAdminName {
@@ -1450,7 +1450,7 @@ function Remove-FolderContents {
     # Nothing to remove. Measure-Object -Property outputs nothing for no input,
     # and .Sum on nothing throws under StrictMode 2, which aborted the caller's
     # whole Invoke-SafeBlock ('Windows Update Cache skipped  -  The property
-    # 'Sum' cannot be found', HOST-A1 2026-09-26).
+    # 'Sum' cannot be found', HOST-A3 2026-09-26).
     if ($beforeCount -eq 0) { return }
     $beforeBytes = ($before | Measure-Object -Property Length -Sum).Sum
     $removed = 0
@@ -2062,7 +2062,7 @@ if ($Script:Config.AssessmentEngine_Enabled) {
         try {
             $avList = Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName 'AntiVirusProduct' -ErrorAction Stop
             # SecurityCenter2 can hold one product more than once, and the
-            # Datto service check below adds Datto AV again: HOST-A1
+            # Datto service check below adds Datto AV again: HOST-A3
             # reported 'Datto AV, Datto AV' (2026-09-26). Each name once.
             foreach ($av in $avList) {
                 $avName = "$($av.displayName)".Trim()
@@ -2864,7 +2864,7 @@ if ($Script:Config.PersistenceEngine_Enabled) {
     Invoke-SafeBlock -Label 'Defender exclusions' -Block {
         # Get-MpPreference needs a running Defender. Where another AV owns the
         # box and Defender is off it fails with an unformatted message
-        # ('Operation failed with the following error: 0x%1!x!', HOST-A1
+        # ('Operation failed with the following error: 0x%1!x!', HOST-A3
         # with Datto AV, 2026-09-26). The exclusions are unknown then: no finding.
         $excl = $null
         try { $excl = Get-MpPreference -ErrorAction Stop } catch { }

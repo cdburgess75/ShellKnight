@@ -9,7 +9,7 @@
     registry value as (Get-ItemProperty $key -Name X -ErrorAction
     SilentlyContinue).X. Where X is not set, which is Windows' default for
     most policies, Get-ItemProperty returns nothing, and .X on nothing throws
-    under Set-StrictMode -Version 2. A real run on HOST-A1 (Windows 11 Pro
+    under Set-StrictMode -Version 2. A real run on HOST-A3 (Windows 11 Pro
     22621, 2026-09-26) logged:
 
         LLMNR check skipped            - 'EnableMulticast' cannot be found
@@ -177,9 +177,9 @@ $devGuard = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard'
 $explorer = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
 $ts       = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
 $rdpTcp   = "$ts\WinStations\RDP-Tcp"
-# As HOST-A1 read: the keys exist, the values under test are not set, and
+# As HOST-A3 read: the keys exist, the values under test are not set, and
 # the policy keys nothing has written are absent.
-function New-JaneRegistry {
+function New-HostA3Registry {
     @{
         $lsa      = @{ LimitBlankPasswordUse = 1; NoLmHash = 1 }
         $wdigest  = @{ Negotiate = 0; UTF8HTTP = 1 }
@@ -265,78 +265,78 @@ foreach ($c in $cases) {
 }
 
 # --- Phase 3: RDP -------------------------------------------------------------
-Test-Case 'rdp: disabled' $rdp -Reg (New-JaneRegistry) -Expect {
+Test-Case 'rdp: disabled' $rdp -Reg (New-HostA3Registry) -Expect {
     Want-Log '^SUMMARY\|RDP  -  disabled \(OK\)'; Want-Findings @()
 }
-Test-Case 'rdp: enabled, NLA enforced' $rdp -Reg (With-Reg (With-Reg (New-JaneRegistry) $ts @{ fDenyTSConnections = 0 }) $rdpTcp @{ UserAuthentication = 1 }) -Expect {
+Test-Case 'rdp: enabled, NLA enforced' $rdp -Reg (With-Reg (With-Reg (New-HostA3Registry) $ts @{ fDenyTSConnections = 0 }) $rdpTcp @{ UserAuthentication = 1 }) -Expect {
     Want-Log 'NLA enforced \(OK\)'; Want-Findings @()
 }
-Test-Case 'rdp: enabled, NLA off' $rdp -Reg (With-Reg (With-Reg (New-JaneRegistry) $ts @{ fDenyTSConnections = 0 }) $rdpTcp @{ UserAuthentication = 0 }) -Expect {
+Test-Case 'rdp: enabled, NLA off' $rdp -Reg (With-Reg (With-Reg (New-HostA3Registry) $ts @{ fDenyTSConnections = 0 }) $rdpTcp @{ UserAuthentication = 0 }) -Expect {
     Want-Findings @('Medium: RDP enabled, NLA not enforced'); Want-Writes @()
 }
 # Not read is unknown: no 'NLA not enforced' finding, and no write even when
 # enforcing NLA is switched on.
-Test-Case 'rdp: enabled, UserAuthentication not set' $rdp -Reg (With-Reg (With-Reg (New-JaneRegistry) $ts @{ fDenyTSConnections = 0 }) $rdpTcp @{ PortNumber = 3389 }) -Config @{ EnforceRDP_NLA = $true } -Expect {
+Test-Case 'rdp: enabled, UserAuthentication not set' $rdp -Reg (With-Reg (With-Reg (New-HostA3Registry) $ts @{ fDenyTSConnections = 0 }) $rdpTcp @{ PortNumber = 3389 }) -Config @{ EnforceRDP_NLA = $true } -Expect {
     Want-Log '^INFO\|RDP is ENABLED  -  NLA setting \(UserAuthentication\) not found; not checked'
     Want-Findings @(); Want-Writes @()
 }
-Test-Case 'rdp: fDenyTSConnections not set' $rdp -Reg (With-Reg (New-JaneRegistry) $ts @{ TSUserEnabled = 0 }) -Expect {
+Test-Case 'rdp: fDenyTSConnections not set' $rdp -Reg (With-Reg (New-HostA3Registry) $ts @{ TSUserEnabled = 0 }) -Expect {
     Want-Log '^INFO\|RDP  -  fDenyTSConnections not found; not checked'; Want-Findings @()
 }
 
 # --- Phase 3: LLMNR -----------------------------------------------------------
 # Not set is Windows' default: LLMNR on. A warning, never a finding or a write
 # unless $SK_DisableLLMNR asks for one.
-Test-Case 'llmnr: policy key absent' $llmnr -Reg (New-JaneRegistry) -Expect {
+Test-Case 'llmnr: policy key absent' $llmnr -Reg (New-HostA3Registry) -Expect {
     Want-Log '^WARN\|LLMNR enabled \(policy not set; Windows default is on\)'; Want-Writes @(); Want-Findings @()
 }
-Test-Case 'llmnr: policy key without EnableMulticast' $llmnr -Reg (With-Reg (New-JaneRegistry) $dns @{ EnableMDNS = 0 }) -Expect {
+Test-Case 'llmnr: policy key without EnableMulticast' $llmnr -Reg (With-Reg (New-HostA3Registry) $dns @{ EnableMDNS = 0 }) -Expect {
     Want-Log '^WARN\|LLMNR enabled \(policy not set'; Want-Writes @()
 }
-Test-Case 'llmnr: disabled by policy' $llmnr -Reg (With-Reg (New-JaneRegistry) $dns @{ EnableMulticast = 0 }) -Expect {
+Test-Case 'llmnr: disabled by policy' $llmnr -Reg (With-Reg (New-HostA3Registry) $dns @{ EnableMulticast = 0 }) -Expect {
     Want-Log '^SUMMARY\|LLMNR  -  disabled \(OK\)'; Want-Writes @()
 }
-Test-Case 'llmnr: enabled by policy' $llmnr -Reg (With-Reg (New-JaneRegistry) $dns @{ EnableMulticast = 1 }) -Expect {
+Test-Case 'llmnr: enabled by policy' $llmnr -Reg (With-Reg (New-HostA3Registry) $dns @{ EnableMulticast = 1 }) -Expect {
     Want-Log '^WARN\|LLMNR enabled by policy \(EnableMulticast = 1\)'; Want-Writes @()
 }
-Test-Case 'llmnr: not set, DisableLLMNR on' $llmnr -Reg (New-JaneRegistry) -Config @{ DisableLLMNR = $true } -Expect {
+Test-Case 'llmnr: not set, DisableLLMNR on' $llmnr -Reg (New-HostA3Registry) -Config @{ DisableLLMNR = $true } -Expect {
     Want-Writes @("new $dns", "set $dns|EnableMulticast=0"); Want-Log '^HARDEN\|LLMNR disabled'
 }
 
 # --- Phase 3: LAN Manager auth ------------------------------------------------
 # Not set is Windows' default, 3: OK, and $SK_SetLMAuthLevel does not touch it
 # (it raises levels below 3, as it always has for a level that is set).
-Test-Case 'lm: not set' $lmAuth -Reg (New-JaneRegistry) -Expect {
+Test-Case 'lm: not set' $lmAuth -Reg (New-HostA3Registry) -Expect {
     Want-Log '^SUMMARY\|LAN Manager auth level: not set, Windows default 3'; Want-NoLog '^WARN\|'; Want-Writes @()
 }
-Test-Case 'lm: not set, SetLMAuthLevel on' $lmAuth -Reg (New-JaneRegistry) -Config @{ SetLMAuthLevel = $true } -Expect {
+Test-Case 'lm: not set, SetLMAuthLevel on' $lmAuth -Reg (New-HostA3Registry) -Config @{ SetLMAuthLevel = $true } -Expect {
     Want-Writes @()
 }
-Test-Case 'lm: 2' $lmAuth -Reg (With-Reg (New-JaneRegistry) $lsa @{ LmCompatibilityLevel = 2 }) -Expect {
+Test-Case 'lm: 2' $lmAuth -Reg (With-Reg (New-HostA3Registry) $lsa @{ LmCompatibilityLevel = 2 }) -Expect {
     Want-Log '^WARN\|LAN Manager auth level is 2'; Want-Writes @()
 }
-Test-Case 'lm: 2, SetLMAuthLevel on' $lmAuth -Reg (With-Reg (New-JaneRegistry) $lsa @{ LmCompatibilityLevel = 2 }) -Config @{ SetLMAuthLevel = $true } -Expect {
+Test-Case 'lm: 2, SetLMAuthLevel on' $lmAuth -Reg (With-Reg (New-HostA3Registry) $lsa @{ LmCompatibilityLevel = 2 }) -Config @{ SetLMAuthLevel = $true } -Expect {
     Want-Writes @("set $lsa|LmCompatibilityLevel=5")
 }
-Test-Case 'lm: 5' $lmAuth -Reg (With-Reg (New-JaneRegistry) $lsa @{ LmCompatibilityLevel = 5 }) -Expect {
+Test-Case 'lm: 5' $lmAuth -Reg (With-Reg (New-HostA3Registry) $lsa @{ LmCompatibilityLevel = 5 }) -Expect {
     Want-Log '^SUMMARY\|LAN Manager auth level: 5 \(OK\)'
 }
 
 # --- Phase 3: local Administrators --------------------------------------------
-Test-Case 'admins: Get-LocalGroupMember answers' $localAdmin -With @{ Lgm = @('HOST-A1\Administrator', 'CORP\Domain Admins', 'CORP\Domain Users', 'CORP\jdoe') } -Expect {
+Test-Case 'admins: Get-LocalGroupMember answers' $localAdmin -With @{ Lgm = @('HOST-A3\Administrator', 'CORP\Domain Admins', 'CORP\Domain Users', 'CORP\jdoe') } -Expect {
     Want-Findings @("High: 'CORP\Domain Users' is in local Administrators (ALL domain users have admin)", 'Medium: Local admin: CORP\jdoe')
     # By SID, so a localized group name (Administratoren) is found too.
     Want (@($Script:Writes | Where-Object { $_ -eq 'Get-LocalGroupMember SID=S-1-5-32-544 Group=' }).Count -eq 1) "Get-LocalGroupMember not called by SID: $($Script:Writes -join '; ')"
 }
-# HOST-A1: error 1789. The WinNT provider lists the members unresolved.
+# HOST-A3: error 1789. The WinNT provider lists the members unresolved.
 Test-Case 'admins: error 1789, ADSI fallback' $localAdmin -With @{ Lgm = 'throw'; Adsi = @(
-        'WinNT://WORKGROUP/HOST-A1/Administrator', 'WinNT://CORP/Domain Admins',
+        'WinNT://WORKGROUP/HOST-A3/Administrator', 'WinNT://CORP/Domain Admins',
         'WinNT://CORP/jdoe', 'WinNT://S-1-5-21-1111-2222-3333-1105') } -Expect {
     Want-Log '^WARN\|Local admins found \(4 total\)'
     Want-Findings @('Medium: Local admin: CORP\jdoe', 'Medium: Local admin: S-1-5-21-1111-2222-3333-1105')
 }
 # A one-member list must stay a list (Count 1), not become a bare string.
-Test-Case 'admins: error 1789, only Administrator' $localAdmin -With @{ Lgm = 'throw'; Adsi = @('WinNT://WORKGROUP/HOST-A1/Administrator') } -Expect {
+Test-Case 'admins: error 1789, only Administrator' $localAdmin -With @{ Lgm = 'throw'; Adsi = @('WinNT://WORKGROUP/HOST-A3/Administrator') } -Expect {
     Want-Log '^SUMMARY\|Local admins  -  1 account\(s\) \(OK\)'; Want-Findings @()
 }
 # An empty list is an answer (0 members), not unknown.
@@ -401,19 +401,19 @@ finally {
 # Not set is Windows' default: off. Turning it on is opt-in
 # ($SK_EnableScriptBlockLogging, default $false); the unconditional write the
 # old read never let run must not start running now.
-Test-Case 'script block: policy key absent' $sbAudit -Reg (New-JaneRegistry) -Expect {
+Test-Case 'script block: policy key absent' $sbAudit -Reg (New-HostA3Registry) -Expect {
     Want-Log '^INFO\|PS script block audit  -  script block logging \(4104\) is off \(policy not set\)'; Want-Writes @()
 }
-Test-Case 'script block: policy key without the value' $sbAudit -Reg (With-Reg (New-JaneRegistry) $sbKey @{ EnableScriptBlockInvocationLogging = 0 }) -Expect {
+Test-Case 'script block: policy key without the value' $sbAudit -Reg (With-Reg (New-HostA3Registry) $sbKey @{ EnableScriptBlockInvocationLogging = 0 }) -Expect {
     Want-Log 'is off \(policy not set\)'; Want-Writes @()
 }
-Test-Case 'script block: off by policy' $sbAudit -Reg (With-Reg (New-JaneRegistry) $sbKey @{ EnableScriptBlockLogging = 0 }) -Expect {
+Test-Case 'script block: off by policy' $sbAudit -Reg (With-Reg (New-HostA3Registry) $sbKey @{ EnableScriptBlockLogging = 0 }) -Expect {
     Want-Log 'is off \(EnableScriptBlockLogging = 0\)'; Want-Writes @()
 }
-Test-Case 'script block: not set, opted in' $sbAudit -Reg (New-JaneRegistry) -Config @{ EnableScriptBlockLogging = $true } -Expect {
+Test-Case 'script block: not set, opted in' $sbAudit -Reg (New-HostA3Registry) -Config @{ EnableScriptBlockLogging = $true } -Expect {
     Want-Writes @("new $sbKey", "set $sbKey|EnableScriptBlockLogging=1"); Want-Log '^HARDEN\|PowerShell script block logging \(4104\) enabled'
 }
-Test-Case 'script block: on, events audited' $sbAudit -Reg (With-Reg (New-JaneRegistry) $sbKey @{ EnableScriptBlockLogging = 1 }) -With @{ Events = @(
+Test-Case 'script block: on, events audited' $sbAudit -Reg (With-Reg (New-HostA3Registry) $sbKey @{ EnableScriptBlockLogging = 1 }) -With @{ Events = @(
         [pscustomobject]@{ TimeCreated = (Get-Date); Message = 'Get-ChildItem C:\' }
         [pscustomobject]@{ TimeCreated = (Get-Date); Message = 'Write-Output ok' }) } -Expect {
     Want-Log '^SUMMARY\|PS script block audit  -  2 events checked, no obfuscation found'; Want-Writes @()
@@ -422,7 +422,7 @@ Test-Case 'script block: on, events audited' $sbAudit -Reg (With-Reg (New-JaneRe
 # --- Phase 8: credential exposure ---------------------------------------------
 # Not set: WDigest off (8.1 / 2012 R2 on), LSA protection and VBS off. Only an
 # explicit UseLogonCredential = 1 is the IOC.
-foreach ($c in @(@('credential: values not set', (New-JaneRegistry)), @('credential: keys absent', @{}))) {
+foreach ($c in @(@('credential: values not set', (New-HostA3Registry)), @('credential: keys absent', @{}))) {
     Test-Case $c[0] $credential -Reg $c[1] -Expect {
         Want-Log '^SUMMARY\|WDigest  -  plaintext credential caching disabled \(OK\)'
         Want-Log '^WARN\|LSA protection \(RunAsPPL\) not enabled'
@@ -430,19 +430,19 @@ foreach ($c in @(@('credential: values not set', (New-JaneRegistry)), @('credent
         Want ($Script:Counters.IOCsFound -eq 0) "IOCsFound = $($Script:Counters.IOCsFound)"
     }
 }
-Test-Case 'credential: WDigest on' $credential -Reg (With-Reg (New-JaneRegistry) $wdigest @{ UseLogonCredential = 1 }) -Expect {
+Test-Case 'credential: WDigest on' $credential -Reg (With-Reg (New-HostA3Registry) $wdigest @{ UseLogonCredential = 1 }) -Expect {
     Want-Log '^IOC\|WDigest ENABLED'; Want ($Script:Counters.IOCsFound -eq 1) "IOCsFound = $($Script:Counters.IOCsFound)"
 }
 
 # --- Phase 8: CIS Benchmark ---------------------------------------------------
-# HOST-A1 stopped after 1.1.1. It must reach its summary line.
-Test-Case 'cis: values not set' $cis -Reg (New-JaneRegistry) -Expect {
+# HOST-A3 stopped after 1.1.1. It must reach its summary line.
+Test-Case 'cis: values not set' $cis -Reg (New-HostA3Registry) -Expect {
     Want-Log '^INFO\|  \[CIS 2\.3\] LAN Manager auth level: not set, Windows default 3 \(OK\)'
     Want-Log '^WARN\|  \[CIS 2\.8\] AutoRun not fully disabled'
     Want-Log '^INFO\|  \[CIS 2\.9\] Windows Defender enabled \(OK\)'
     Want-Log '^WARN\|CIS Benchmark Lite  -  1 check\(s\) failed'
 }
-Test-Case 'cis: LAN Manager 2, AutoRun 255' $cis -Reg (With-Reg (With-Reg (New-JaneRegistry) $lsa @{ LmCompatibilityLevel = 2 }) $explorer @{ NoDriveTypeAutoRun = 255 }) -Expect {
+Test-Case 'cis: LAN Manager 2, AutoRun 255' $cis -Reg (With-Reg (With-Reg (New-HostA3Registry) $lsa @{ LmCompatibilityLevel = 2 }) $explorer @{ NoDriveTypeAutoRun = 255 }) -Expect {
     Want-Log '^WARN\|  \[CIS 2\.3\] LAN Manager auth level is 2'
     Want-Log '^INFO\|  \[CIS 2\.8\] AutoRun disabled \(OK\)'
     Want-Log '^WARN\|CIS Benchmark Lite  -  1 check\(s\) failed'
@@ -450,10 +450,10 @@ Test-Case 'cis: LAN Manager 2, AutoRun 255' $cis -Reg (With-Reg (With-Reg (New-J
 
 # --- Scoring: LAN Manager rule ------------------------------------------------
 # Only a level that is set and below 3 costs 15 (ADR 0009).
-foreach ($c in @(@('not set', (New-JaneRegistry), 100), @('key unreadable', @{ $lsa = 'throw' }, 100),
-                 @('level 2', (With-Reg (New-JaneRegistry) $lsa @{ LmCompatibilityLevel = 2 }), 85),
-                 @('level 0', (With-Reg (New-JaneRegistry) $lsa @{ LmCompatibilityLevel = 0 }), 85),
-                 @('level 3', (With-Reg (New-JaneRegistry) $lsa @{ LmCompatibilityLevel = 3 }), 100))) {
+foreach ($c in @(@('not set', (New-HostA3Registry), 100), @('key unreadable', @{ $lsa = 'throw' }, 100),
+                 @('level 2', (With-Reg (New-HostA3Registry) $lsa @{ LmCompatibilityLevel = 2 }), 85),
+                 @('level 0', (With-Reg (New-HostA3Registry) $lsa @{ LmCompatibilityLevel = 0 }), 85),
+                 @('level 3', (With-Reg (New-HostA3Registry) $lsa @{ LmCompatibilityLevel = 3 }), 100))) {
     $want = $c[2]
     Test-Case "score: LAN Manager $($c[0])" $lmScore -Reg $c[1] -Expect {
         Want ($Script:SecurityScore -eq $want) "security score $($Script:SecurityScore), expected $want"

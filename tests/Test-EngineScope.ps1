@@ -24,7 +24,7 @@
     Up to v2026.09.26.001 the CIS block read LmCompatibilityLevel with
     (Get-ItemProperty ...).LmCompatibilityLevel. Where the value is not set,
     which is Windows' default, that threw under StrictMode 2 and the block
-    stopped after 1.1.1 (HOST-A1 2026-09-26). Not set is Windows' default
+    stopped after 1.1.1 (HOST-A3 2026-09-26). Not set is Windows' default
     level 3, so it must neither stop the block nor cost the -15 LAN Manager
     rule; an explicit level below 3 still does. The Antivirus field must name
     each product once: SecurityCenter2 and the Datto service check can each
