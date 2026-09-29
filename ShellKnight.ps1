@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.09.25.004  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.09.26.001  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.09.25.004
-    Released   : 2026-09-25
-    Prior      : v2026.09.25.003
+    Version    : v2026.09.26.001
+    Released   : 2026-09-26
+    Prior      : v2026.09.25.004
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,27 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.09.26.001 - Harden C:\ProgramData\ShellKnight against local privilege
+             escalation. By default ProgramData lets BUILTIN\Users create files
+             and folders in its subfolders, and CREATOR OWNER gets full control
+             of what they create. On a box where ShellKnight had never run, a
+             standard user could pre-create C:\ProgramData\ShellKnight (or
+             run.ps1 / config.json) and own it, then choose the code the SYSTEM
+             scheduled task runs, or redirect the run report and its API key
+             through config.json. Now, before config.json is read or the task is
+             trusted, the folder is created or repaired with an explicit ACL -
+             SYSTEM and Administrators full control, Users read only, inheritance
+             removed so the ProgramData Users-create ACEs are gone - and a folder
+             a user already owns is removed and recreated. Any config.json or
+             run.ps1 not owned by SYSTEM or Administrators is deleted, not read
+             or executed. Owner is checked with (Get-Acl).GetOwner, the same
+             model as the Intel cache check (v2026.09.25.004); the ACL is set
+             with icacls by SID (S-1-5-18 / S-1-5-32-544 / S-1-5-32-545), never
+             by localized name. The report's health object gains
+             state_dir_repaired and state_dir_files_removed so the dashboard can
+             flag a box that showed signs of tampering. New tests/Test-
+             StateDirGuard.ps1. NOT yet run on real Windows - the ACL and owner
+             checks need one real SYSTEM run before this reaches main.
     v2026.09.25.004 - The Intel Engine loads threat intel for the first time,
              and every intel match is REPORT-ONLY. Since v1.002 the engine
              read $Script:Config.IntelEngine_PrimarySource, which Config did
@@ -535,7 +556,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.09.25.004 CONFIGURATION
+# SHELLKNIGHT v2026.09.26.001 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -689,6 +710,162 @@ $Script:ConfigPath               = 'C:\ProgramData\ShellKnight\config.json'
 # engine can recognise (and never remove) our own persistence task.
 $Script:SelfLauncherPath         = Join-Path (Split-Path $Script:ConfigPath -Parent) 'run.ps1'
 
+# ==============================================================================
+# STATE DIRECTORY HARDENING - runs before anything on disk is trusted
+# ==============================================================================
+# C:\ProgramData\ShellKnight holds config.json (read just below), run.ps1 (the
+# native scheduled task executes it as SYSTEM every 8 h) and the Logs, JSON and
+# Intel folders. By default ProgramData lets BUILTIN\Users create files and
+# folders in its subfolders, and CREATOR OWNER gets full control of what they
+# create. So on a box where ShellKnight has never run, a standard user can
+# pre-create this folder (or run.ps1 / config.json) and own it. Owning run.ps1
+# lets them choose the code SYSTEM runs (local privilege escalation); owning
+# config.json lets them point the run report and its API key at a URL of their
+# own. Once SYSTEM has created a file a user cannot modify it, but if the user
+# owns the folder they can still delete and replace its files.
+#
+# So, before the config below is read: create or repair the folder with an
+# explicit ACL (SYSTEM and Administrators full control, Users read only, no
+# inherited create rights), and delete any config.json or run.ps1 that SYSTEM
+# or Administrators does not own. This mirrors the Intel cache owner check
+# (v2026.09.25.004) and uses SIDs, never localized names, throughout - the
+# groups are 'Administratoren' / 'Benutzer' on a German box but the SIDs are the
+# same everywhere. It runs before Initialize-Logging, so it cannot Log-*; notes
+# are buffered in $Script:StateGuardNotes and flushed to the log once it is open.
+$Script:StateDir           = Split-Path $Script:ConfigPath -Parent
+$Script:StateGuardNotes    = New-Object 'System.Collections.Generic.List[string]'
+$Script:SID_System         = 'S-1-5-18'      # NT AUTHORITY\SYSTEM
+$Script:SID_Administrators = 'S-1-5-32-544'  # BUILTIN\Administrators
+$Script:SID_Users          = 'S-1-5-32-545'  # BUILTIN\Users
+$Script:TrustedOwnerSids   = @($Script:SID_System, $Script:SID_Administrators)
+
+function Add-StateGuardNote {
+    param([string]$Message)
+    $Script:StateGuardNotes.Add($Message)
+    Write-Host "  [state-guard] $Message" -ForegroundColor Yellow
+}
+
+function Get-OwnerSid {
+    # The owning SID of a file or folder, or $null if the path does not exist or
+    # the owner cannot be read. A null owner is treated as untrusted by callers.
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    try {
+        (Get-Acl -LiteralPath $Path -ErrorAction Stop).GetOwner(
+            [System.Security.Principal.SecurityIdentifier]).Value
+    } catch { $null }
+}
+
+function Test-TrustedOwner {
+    # $true only if the path exists and SYSTEM or Administrators owns it.
+    # ProgramData lets any local user create and own a file here, so any other
+    # owner - or one that cannot be read - is untrusted.
+    param([string]$Path)
+    (Get-OwnerSid -Path $Path) -in $Script:TrustedOwnerSids
+}
+
+function Invoke-Icacls {
+    # Thin wrapper so callers (and the test) drive icacls uniformly. Returns the
+    # exit code; 0 is success. Output is swallowed - the owner re-check and the
+    # run report are the record, not icacls' chatter.
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+    $null = & icacls.exe @Arguments 2>&1
+    $LASTEXITCODE
+}
+
+function Set-StateDirAcl {
+    # Replace the folder's ACL with exactly SYSTEM and Administrators full
+    # control, Users read and execute, all inheritable to files and subfolders;
+    # owner Administrators; inheritance removed so ProgramData's Users-create
+    # ACEs are gone. Removing the parent's inherited ACEs and setting new
+    # inheritable ones propagates to existing Logs/JSON/Intel children that still
+    # inherit, so no /T sweep is needed on every run. SIDs take the '*' prefix
+    # icacls requires; -f formatting keeps the ':' out of string parsing.
+    param([string]$Path)
+    $sys = '*' + $Script:SID_System
+    $adm = '*' + $Script:SID_Administrators
+    $usr = '*' + $Script:SID_Users
+    $null = Invoke-Icacls @($Path, '/inheritance:r', '/Q', '/C')
+    $rc = Invoke-Icacls @($Path, '/grant:r',
+        ('{0}:(OI)(CI)F'  -f $sys),
+        ('{0}:(OI)(CI)F'  -f $adm),
+        ('{0}:(OI)(CI)RX' -f $usr),
+        '/Q', '/C')
+    $null = Invoke-Icacls @($Path, '/setowner', $adm, '/Q', '/C')
+    $rc -eq 0
+}
+
+function Protect-StateDirectory {
+    # Create the state folder if missing; if it exists but SYSTEM or
+    # Administrators does not own it (a user pre-created it), remove it and its
+    # contents and recreate it - a user-owned tree has no run history worth
+    # keeping and may hold ACEs we cannot enumerate. Then stamp the explicit ACL
+    # either way. Returns a result object; never throws.
+    param([string]$Path)
+    $result = [ordered]@{
+        Existed = $false; OwnerSid = $null; OwnerTrusted = $false
+        Recreated = $false; Created = $false; AclApplied = $false
+    }
+    try {
+        $result.Existed = Test-Path -LiteralPath $Path
+        if ($result.Existed) {
+            $result.OwnerSid     = Get-OwnerSid -Path $Path
+            $result.OwnerTrusted = $result.OwnerSid -in $Script:TrustedOwnerSids
+            if (-not $result.OwnerTrusted) {
+                $who = if ($result.OwnerSid) { $result.OwnerSid } else { 'an unknown account' }
+                Add-StateGuardNote "folder owned by $who, not SYSTEM or Administrators: removing and recreating it"
+                Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+                $result.Existed  = $false
+                $result.Recreated = $true
+            }
+        }
+        if (-not $result.Existed) {
+            $null = New-Item -ItemType Directory -Path $Path -Force -ErrorAction Stop
+            $result.Created = $true
+        }
+        $result.AclApplied = Set-StateDirAcl -Path $Path
+        if (-not $result.AclApplied) {
+            Add-StateGuardNote "could not fully apply the hardened ACL to $Path (icacls returned non-zero)"
+        }
+    } catch {
+        Add-StateGuardNote "hardening error on $Path : $($_.Exception.Message)"
+    }
+    [pscustomobject]$result
+}
+
+function Remove-UntrustedStateFile {
+    # Delete a state file (config.json or run.ps1) unless SYSTEM or
+    # Administrators owns it. A user-owned config.json would redirect the report
+    # and its API key; a user-owned run.ps1 is code SYSTEM would execute. Once
+    # the folder ACL above is in place a user cannot create these, but on the
+    # first hardened run one may already be there. Returns $true if it removed
+    # one. The self-schedule block rewrites run.ps1; a removed config.json means
+    # built-in defaults and env vars stand in for this run.
+    param([string]$Path, [string]$Label)
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    if (Test-TrustedOwner -Path $Path) { return $false }
+    $owner = Get-OwnerSid -Path $Path
+    $who = if ($owner) { $owner } else { 'an unknown account' }
+    Add-StateGuardNote "$Label owned by $who, not SYSTEM or Administrators: deleting it"
+    Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    $true
+}
+
+# Harden the folder, then drop any pre-planted config.json / run.ps1 - all
+# before the config below is read or the scheduled task (which runs run.ps1) is
+# trusted. Guarded so a hardening failure never stops the run.
+$Script:StateDirGuard          = [pscustomobject]@{ Existed = $false; OwnerSid = $null; OwnerTrusted = $false; Recreated = $false; Created = $false; AclApplied = $false }
+$Script:StateGuardFilesRemoved = 0
+try {
+    $Script:StateDirGuard          = Protect-StateDirectory -Path $Script:StateDir
+    $Script:StateGuardFilesRemoved = 0
+    if (Remove-UntrustedStateFile -Path $Script:ConfigPath       -Label 'config.json') { $Script:StateGuardFilesRemoved++ }
+    if (Remove-UntrustedStateFile -Path $Script:SelfLauncherPath -Label 'run.ps1')     { $Script:StateGuardFilesRemoved++ }
+} catch {
+    $Script:StateGuardFilesRemoved = 0
+    Add-StateGuardNote "state hardening skipped: $($_.Exception.Message)"
+}
+
 # Load persisted config FIRST (scheduled runs rely on this); env overrides win after.
 if (Test-Path $Script:ConfigPath) {
     try {
@@ -731,7 +908,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.09.25.004'
+    Version                  = 'v2026.09.26.001'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -1348,12 +1525,20 @@ function Add-IntelHit {
 # ==============================================================================
 Initialize-Logging
 
+# Flush state-directory hardening notes captured before the log was open (the
+# guard runs during config load, ahead of Initialize-Logging).
+if ($Script:StateGuardNotes.Count) {
+    foreach ($n in $Script:StateGuardNotes) { Log-Warn "State directory  -  $n" }
+} else {
+    Log-Info "State directory  -  $Script:StateDir owner and ACL verified"
+}
+
 # Detect PS version compatibility
 $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.09.25.004'
+$version     = 'ShellKnight v2026.09.26.001'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -1385,6 +1570,11 @@ $Script:Health = [ordered]@{
     self_scheduled      = [bool]$SK_SelfSchedule
     schedule_hours      = $SK_ScheduleHours
     next_run            = $null
+    # State-directory hardening outcome (captured at config load). Lets the
+    # dashboard flag a box where a user had pre-created the folder or planted a
+    # config.json / run.ps1 - a sign of an attempted local privilege escalation.
+    state_dir_repaired      = [bool]$Script:StateDirGuard.Recreated
+    state_dir_files_removed = $Script:StateGuardFilesRemoved
 }
 try {
     $existingTask = Get-ScheduledTask -TaskName 'ShellKnight' -ErrorAction Stop
@@ -3840,7 +4030,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.09.25.004 - Report"
+Log-Info "  ShellKnight v2026.09.26.001 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -3853,7 +4043,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.09.25.004 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.09.26.001 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -4129,7 +4319,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.09.25.004'
+    version          = 'v2026.09.26.001'
     device_id        = $Script:DeviceId
     hardware_type    = $Script:MachineInfo['Hardware Type']
     site_name        = $SK_SiteName
