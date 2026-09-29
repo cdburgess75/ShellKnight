@@ -61,6 +61,17 @@ Exactly one of:
 
 A Finding Class is a property of the finding *type*, not of the host it was found on.
 
+### Intel Match
+
+Something on a device that matches the threat-intel feed the Intel Engine downloads (Neo23x0
+signature-base: filename regexes, SHA256 hashes, C2 domains and addresses). It can be a process,
+a Run value, a startup shortcut, a file, a hosts file entry or a DNS cache entry. Report-only:
+it is logged and counted in the Run Report's `intel` object, whose `matches` hold the first 50
+with evidence; the first 20 in a Run are also Low findings titled
+`Intel match (report-only): ...`. It is NOT an IOC alert: it does not count in `ioc_alerts` or
+the Device Security Score, it raises no Battlefield alert, and nothing is killed or removed
+because of it. A match against ShellKnight's own hard-coded lists is an IOC, handled as before.
+
 ### Device Security Score
 
 The per-device score ShellKnight computes during a Run, 0 to 100, published on the Fleet Grid as
