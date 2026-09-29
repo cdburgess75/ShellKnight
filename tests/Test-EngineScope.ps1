@@ -21,6 +21,15 @@
     and raise nothing (ADR 0009), and the payload's password_min_length must
     say null for it, not 0.
 
+    Up to v2026.09.26.001 the CIS block read LmCompatibilityLevel with
+    (Get-ItemProperty ...).LmCompatibilityLevel. Where the value is not set,
+    which is Windows' default, that threw under StrictMode 2 and the block
+    stopped after 1.1.1 (HOST-A3 2026-09-26). Not set is Windows' default
+    level 3, so it must neither stop the block nor cost the -15 LAN Manager
+    rule; an explicit level below 3 still does. The Antivirus field must name
+    each product once: SecurityCenter2 and the Datto service check can each
+    report Datto AV ('Datto AV, Datto AV' on the same box).
+
     This runs the whole of Phase 2, the CIS Benchmark block, the security
     scoring, and the payload's machine fields, all verbatim from
     ShellKnight.ps1. They run under the script's own StrictMode 2 /
@@ -52,6 +61,7 @@ function Get-Section {
 }
 
 $safeBlock = Get-Section '(?ms)^function Invoke-SafeBlock \{.*?^\}' 'Invoke-SafeBlock'
+$regValue  = Get-Section '(?ms)^function Get-RegistryValue \{.*?^\}' 'Get-RegistryValue'
 $biosDate  = Get-Section '(?ms)^function ConvertTo-BiosDate \{.*?^\}' 'ConvertTo-BiosDate'
 $osEol     = Get-Section '(?ms)^function Get-OsEolDate \{.*?^\}' 'Get-OsEolDate'
 # Phase 2 from the MachineInfo reset to the end of the engine's if/else.
@@ -72,7 +82,7 @@ function Write-Host { }
 $Script:Logged   = New-Object 'System.Collections.Generic.List[string]'
 $Script:Findings = New-Object 'System.Collections.Generic.List[object]'
 function Log-Info    { param([string]$m) $Script:Logged.Add($m) }
-function Log-Warn    { param([string]$m) }
+function Log-Warn    { param([string]$m) $Script:Logged.Add($m) }
 function Log-Summary { param([string]$m) }
 function Add-Finding { param($Severity, $Title, $Action) $Script:Findings.Add([pscustomobject]@{ Severity = $Severity; Title = $Title }) }
 $Script:Config    = [pscustomobject]@{ AssessmentEngine_Enabled = $true }
@@ -142,7 +152,12 @@ function Get-ItemProperty {
     param($Path, $Name, $ErrorAction)
     if ("$Path" -match 'Cryptography')         { return [pscustomobject]@{ MachineGuid = 'b1e2c3d4-0000-1111-2222-333344445555' } }
     if ("$Path" -match 'Real-Time Protection') { throw 'Property DisableRealtimeMonitoring does not exist' }
-    if ("$Path" -match 'Control\\Lsa')         { return [pscustomobject]@{ LmCompatibilityLevel = 5 } }
+    # Lm 'not-set': the Lsa key read back without LmCompatibilityLevel, as on
+    # a box where nothing has set it.
+    if ("$Path" -match 'Control\\Lsa') {
+        if ($Script:S.Lm -eq 'not-set') { return [pscustomobject]@{ RunAsPPL = 0; PSChildName = 'Lsa' } }
+        return [pscustomobject]@{ LmCompatibilityLevel = $Script:S.Lm }
+    }
     return $null
 }
 function New-Object {
@@ -186,13 +201,15 @@ function Get-SmbServerConfiguration { param($ErrorAction) [pscustomobject]@{ Ena
 function Get-NetFirewallProfile { param($ErrorAction) @([pscustomobject]@{ Profile = 'Domain'; Enabled = $true }) }
 
 Invoke-Expression $safeBlock
+Invoke-Expression $regValue
 Invoke-Expression $biosDate
 Invoke-Expression $osEol
 
 # --- Scenarios --------------------------------------------------------------
 # The machine each mock describes, and what the payload and the score must say.
-# Penalty: points the five rules under test must take off 100 (AV -25, OS EOL
-# -20, BitLocker -15, Windows Update -15, password length -20/-10/-5). $null
+# Penalty: points the six rules under test must take off 100 (AV -25, OS EOL
+# -20, BitLocker -15, Windows Update -15, password length -20/-10/-5, LAN
+# Manager auth level below 3 -15). $null
 # for Av/Edr/Def means the engine did not run, so the payload has no value to
 # report. Pw is the CIS 1.1.1 finding's title, or $null for none. Len is the
 # payload's password_min_length: the length read, or $null when it was not.
@@ -200,7 +217,7 @@ Invoke-Expression $osEol
 # this fixture does not age into end of life. Tests/Test-OsEol.ps1 covers the
 # edition dates themselves.
 $healthy = @{ Engine = 'runs'; Caption = 'Microsoft Windows 11 IoT Enterprise LTSC'; Build = '26100'; BitLocker = 'On'; WuDays = 6
-              AvList = @('Windows Defender'); Defender = 'active'; Services = @(); Net = 'ok'; PwLen = 14 }
+              AvList = @('Windows Defender'); Defender = 'active'; Services = @(); Net = 'ok'; PwLen = 14; Lm = 5 }
 function New-Scenario([string]$Name, [hashtable]$Machine, [hashtable]$Expect) {
     $m = $healthy.Clone(); foreach ($k in $Machine.Keys) { $m[$k] = $Machine[$k] }
     $e = @{ Av = 'Windows Defender'; Edr = 'None detected'; Def = 'Active'; Penalty = 0; Finding = $false; Pw = $null; Len = 14; Eol = $false }
@@ -224,6 +241,8 @@ $scenarios = @(
     # no penalty (the old Defender DISABLED rule would have taken 20).
     New-Scenario 'third-party-av'        @{ AvList = @('Windows Defender', 'Bitdefender Endpoint Security Tools'); Defender = 'off' } @{ Av = 'Bitdefender Endpoint Security Tools'; Def = 'DISABLED' }
     New-Scenario 'edr'                   @{ Services = @('SentinelAgent', 'CSFalconService') } @{ Edr = 'CrowdStrike Falcon, SentinelOne' }
+    # Datto AV twice in SecurityCenter2 and once more from its service: named once.
+    New-Scenario 'av-duplicates'         @{ AvList = @('Windows Defender', 'Datto AV', 'Datto AV'); Services = @('EndpointProtectionService2'); Defender = 'off' } @{ Av = 'Datto AV'; Def = 'DISABLED' }
     New-Scenario 'no-av'                 @{ AvList = @(); Defender = 'removed' } @{ Av = 'NONE DETECTED'; Def = 'Unknown'; Penalty = 25 }
     # Defender off and nothing else: -25 once, not -25 and -20.
     New-Scenario 'defender-off-no-av'    @{ Defender = 'off' }                 @{ Av = 'Windows Defender (status DISABLED)'; Def = 'DISABLED'; Penalty = 25 }
@@ -238,6 +257,10 @@ $scenarios = @(
     New-Scenario 'net-accounts-no-length' @{ Net = 'no-length-line' }          @{ Len = $null }
     # A length line with no number: [int]'' is 0, so this must not parse as 0.
     New-Scenario 'net-accounts-no-number' @{ PwLen = '' }                      @{ Len = $null }
+    # LmCompatibilityLevel not set is Windows' default, 3: not scored, and the
+    # CIS block must run past 2.3. An explicit level below 3 is still -15.
+    New-Scenario 'lm-not-set'            @{ Lm = 'not-set' }                   @{}
+    New-Scenario 'lm-2'                  @{ Lm = 2 }                           @{ Penalty = 15 }
     # The engine produced nothing, so none of the five rules may fire, though
     # the machine has every problem they look for.
     New-Scenario 'engine-aborts'         @{ Engine = 'aborts'; BitLocker = 'Off'; WuDays = 45; PwLen = 0 } @{ Av = $null; Edr = $null; Def = $null; Len = $null }
@@ -272,9 +295,13 @@ foreach ($sc in $scenarios) {
         $payload = Invoke-Expression $payloadSrc
     } finally { $ErrorActionPreference = 'Stop' }
 
-    # The CIS block may stop at a check after 1.1.1 whose mock throws (2.9, with
-    # Defender removed). Only 1.1.1 is under test; it is checked below.
+    # The CIS block may stop at its last check, 2.9, only where the mock for
+    # Get-MpComputerStatus throws (Defender removed). Anywhere else a stop is a
+    # failure, and 2.3 must have run.
     $skipped = @($Script:Logged | Where-Object { $_ -match 'skipped' -and $_ -notmatch '^CIS Benchmark skipped' })
+    $cisSkipped = @($Script:Logged | Where-Object { $_ -match '^CIS Benchmark skipped' })
+    if ($cisSkipped.Count -and $sc.Defender -ne 'removed') { Fail $label "the CIS block aborted: $($cisSkipped -join ' | ')" }
+    if (-not @($Script:Logged | Where-Object { $_ -match '\[CIS 2\.3\]' }).Count) { Fail $label 'the CIS 2.3 check did not run' }
     if ($sc.Engine -eq 'runs' -and $skipped.Count) { Fail $label "a block aborted: $($skipped -join ' | ')" }
     if ($sc.Engine -eq 'aborts' -and -not @($skipped | Where-Object { $_ -match '^Assessment Engine skipped' }).Count) {
         Fail $label 'expected the engine to abort in this scenario (test harness check)'

@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.09.26.001  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.09.26.002  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.09.26.001
+    Version    : v2026.09.26.002
     Released   : 2026-09-26
-    Prior      : v2026.09.25.004
+    Prior      : v2026.09.26.001
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,42 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.09.26.002 - A value that is not set no longer stops a check. A real
+             run on HOST-A3 (Windows 11 Pro 22621, 2026-09-26) logged
+             eight Invoke-SafeBlock skips, each dropping the rest of its
+             block. Most checks read (Get-ItemProperty $key -Name X
+             -ErrorAction SilentlyContinue).X; where X is not set, Windows'
+             default for most policies, that is .X on nothing, which throws
+             under StrictMode 2. So since v1.002 the LLMNR, LAN Manager auth,
+             PS script block audit and credential exposure checks never ran
+             to the end on such a box, and the CIS block stopped after 1.1.1.
+             New Get-RegistryValue returns the value or $null and never
+             throws; every such read uses it, the RDP/NLA check included. Not
+             set means Windows' default where documented (LmCompatibilityLevel
+             3, LLMNR on, WDigest off, script block logging off), otherwise
+             unknown; neither is a finding or a deduction (ADR 0009). An unset
+             LmCompatibilityLevel is OK, and $SK_SetLMAuthLevel still raises
+             only a level set below 3.
+             FLEET SAFETY. The script block audit's write (set the 4104 policy
+             to 1 whenever it is not 1) was unconditional, but never ran where
+             the policy was unset. It is now opt-in: new
+             $SK_EnableScriptBlockLogging, default $false.
+             Windows Update: Remove-FolderContents threw on an empty folder
+             ('Sum' of nothing), after the block had stopped wuauserv, bits and
+             UsoSvc and before it restarted them. It returns early now, and the
+             restart is in a finally.
+             Local admins: Get-LocalGroupMember fails for the whole group on
+             one unresolvable member (error 1789). Now asked by SID
+             S-1-5-32-544, with an ADSI WinNT fallback that lists members
+             unresolved; neither answering is unknown, no finding. Boxes that
+             skipped this check will now report their local-admin findings.
+             Defender exclusions: Get-MpPreference fails with Defender off
+             (0x%1!x!, Datto AV); logged as not checked, no finding.
+             Antivirus names each product once ('Datto AV, Datto AV').
+             No scoring rule changes; the LAN Manager rule is rewritten as
+             'set and below 3', which it already was in effect.
+             New tests/Test-MissingRegistryValues.ps1; Test-EngineScope.ps1
+             extended. NOT yet run on real Windows.
     v2026.09.26.001 - Harden C:\ProgramData\ShellKnight against local privilege
              escalation. By default ProgramData lets BUILTIN\Users create files
              and folders in its subfolders, and CREATOR OWNER gets full control
@@ -556,7 +592,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.09.26.001 CONFIGURATION
+# SHELLKNIGHT v2026.09.26.002 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -596,6 +632,7 @@ $SK_SetLMAuthLevel               = $false   # Auto-set LAN Manager authenticatio
 $SK_LMAuthLevel                  = 5        # Target LM auth level (5 = NTLMv2 only, refuse LM/NTLM)
                                              # WARNING: level 5 may break legacy devices/printers
 $SK_EnableFirewall               = $false   # Auto-enable Windows Firewall on all disabled profiles
+$SK_EnableScriptBlockLogging     = $false   # Auto-enable PowerShell script block logging (event 4104) when it is off
 $SK_VerboseScreen                = $false   # Show summary INFO messages on screen (default: clean output)
 
 # --- PROCESS ENGINE (Phase 4) ---
@@ -908,7 +945,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.09.26.001'
+    Version                  = 'v2026.09.26.002'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -928,6 +965,7 @@ $Script:Config = [PSCustomObject]@{
     SetLMAuthLevel           = $SK_SetLMAuthLevel
     LMAuthLevel              = $SK_LMAuthLevel
     EnableFirewall           = $SK_EnableFirewall
+    EnableScriptBlockLogging = $SK_EnableScriptBlockLogging
     VerboseScreen            = $SK_VerboseScreen
     # Process Engine
     ProcessEngine_Enabled    = $SK_ProcessEngine_Enabled
@@ -1192,6 +1230,66 @@ function Invoke-SafeBlock {
     catch { Log-Info "$Label skipped  -  $($_.Exception.Message)" }
 }
 
+# One registry value, or $null when the key or the value is not there (or
+# cannot be read).
+#
+# (Get-ItemProperty $key -Name X -ErrorAction SilentlyContinue).X throws under
+# Set-StrictMode -Version 2 when X is absent: Get-ItemProperty returns nothing,
+# and reading .X off nothing is "The property 'X' cannot be found on this
+# object". Invoke-SafeBlock then logs '<label> skipped' and the rest of the
+# block never runs. Most policy values are absent until someone sets them, so
+# that was the usual case, not the edge (HOST-A3 2026-09-26: LLMNR, LAN
+# Manager auth, CIS Benchmark, PS script block audit, Credential exposure).
+# The caller decides what an absent value means: Windows' default, or
+# unknown. Neither is scored as a vulnerability (ADR 0009).
+function Get-RegistryValue {
+    param([string]$Path, [string]$Name)
+    try {
+        $item = Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue
+        if ($null -eq $item) { return $null }
+        $prop = $item.PSObject.Properties[$Name]
+        if ($null -eq $prop) { return $null }
+        return $prop.Value
+    } catch { return $null }
+}
+
+# ADsPath of every member of the local Administrators group (S-1-5-32-544),
+# from the WinNT provider. It lists members without resolving them, so an
+# orphaned or unreachable domain SID comes back as 'WinNT://S-1-5-21-...'
+# instead of failing the whole list. The group is found by SID, so a localized
+# name (Administratoren) works. Throws if ADSI does.
+function Get-LocalAdminAdsPath {
+    $sid   = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')
+    $group = $sid.Translate([System.Security.Principal.NTAccount]).Value.Split('\')[-1]
+    $adsi  = [ADSI]"WinNT://$env:COMPUTERNAME/$group,group"
+    foreach ($m in @($adsi.psbase.Invoke('Members'))) {
+        [string]$m.GetType().InvokeMember('ADsPath', 'GetProperty', $null, $m, $null)
+    }
+}
+
+# Names of the local Administrators members, as 'DOMAIN\name' (or a bare SID
+# that cannot be resolved), or $null when they cannot be listed.
+#
+# Get-LocalGroupMember fails for the whole group when it cannot resolve one
+# member - an orphaned domain SID, an Entra ID member, or a domain the box
+# cannot reach. HOST-A3 2026-09-26: 'An unspecified error occurred: error
+# code = 1789' (the trust relationship failed). The WinNT provider is the
+# fallback. $null means unknown: no finding either way.
+function Get-LocalAdminName {
+    try {
+        return ,@(Get-LocalGroupMember -SID 'S-1-5-32-544' -ErrorAction Stop | ForEach-Object { [string]$_.Name })
+    } catch { }
+    try {
+        # WinNT://CORP/jdoe -> CORP\jdoe; WinNT://WORKGROUP/PC/Administrator ->
+        # PC\Administrator (a local account); WinNT://S-1-5-21-... -> the SID.
+        return ,@(Get-LocalAdminAdsPath | ForEach-Object {
+            $parts = @(($_ -replace '^WinNT://', '').Split('/') | Where-Object { $_ })
+            if ($parts.Count -ge 2) { $parts[-2] + '\' + $parts[-1] } else { $parts[-1] }
+        })
+    } catch { }
+    return $null
+}
+
 # Win32_BIOS.ReleaseDate, normalised to a DateTime.
 #
 # Get-CimInstance already returns a DateTime here; only the legacy
@@ -1349,6 +1447,11 @@ function Remove-FolderContents {
     $gciParams = @{ LiteralPath = $Path; Recurse = $true; Force = $true; ErrorAction = 'SilentlyContinue'; File = $true }
     $before = @(Get-ChildItem @gciParams)
     $beforeCount = $before.Count
+    # Nothing to remove. Measure-Object -Property outputs nothing for no input,
+    # and .Sum on nothing throws under StrictMode 2, which aborted the caller's
+    # whole Invoke-SafeBlock ('Windows Update Cache skipped  -  The property
+    # 'Sum' cannot be found', HOST-A3 2026-09-26).
+    if ($beforeCount -eq 0) { return }
     $beforeBytes = ($before | Measure-Object -Property Length -Sum).Sum
     $removed = 0
     foreach ($f in $before) {
@@ -1538,7 +1641,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.09.26.001'
+$version     = 'ShellKnight v2026.09.26.002'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -1958,15 +2061,19 @@ if ($Script:Config.AssessmentEngine_Enabled) {
         $defenderRegistered = $false
         try {
             $avList = Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName 'AntiVirusProduct' -ErrorAction Stop
+            # SecurityCenter2 can hold one product more than once, and the
+            # Datto service check below adds Datto AV again: HOST-A3
+            # reported 'Datto AV, Datto AV' (2026-09-26). Each name once.
             foreach ($av in $avList) {
-                $avName = $av.displayName
+                $avName = "$($av.displayName)".Trim()
                 if ($avName -match 'Windows Defender|Microsoft Defender') { $defenderRegistered = $true }
-                else { $avProducts.Add($avName) }
+                elseif ($avName -and $avProducts -notcontains $avName) { $avProducts.Add($avName) }
             }
         } catch { }
 
         # Datto AV (registered AV product; RMM handled elsewhere)
-        if (Get-Service -Name 'EndpointProtectionService2' -ErrorAction SilentlyContinue) {
+        if ((Get-Service -Name 'EndpointProtectionService2' -ErrorAction SilentlyContinue) -and
+            $avProducts -notcontains 'Datto AV') {
             $avProducts.Add('Datto AV')
         }
 
@@ -2210,12 +2317,16 @@ if ($Script:Config.HardeningEngine_Enabled) {
 
     # RDP / NLA check
     Invoke-SafeBlock -Label 'RDP check' -Block {
-        $rdpEnabled = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' `
-                       -Name 'fDenyTSConnections' -ErrorAction Stop).fDenyTSConnections -eq 0
+        # Either value missing is unknown, not a finding (ADR 0009). Both are
+        # normally present, so this is not expected; it stops the check
+        # instead of raising 'NLA not enforced' from a value never read.
+        $denyTs = Get-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections'
+        if ($null -eq $denyTs) { Log-Info "RDP  -  fDenyTSConnections not found; not checked"; return }
+        $rdpEnabled = $denyTs -eq 0
         if ($rdpEnabled) {
-            $nlaEnabled = (Get-ItemProperty `
-                'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                -Name 'UserAuthentication' -ErrorAction SilentlyContinue).UserAuthentication -eq 1
+            $nlaValue = Get-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication'
+            if ($null -eq $nlaValue) { Log-Info "RDP is ENABLED  -  NLA setting (UserAuthentication) not found; not checked"; return }
+            $nlaEnabled = $nlaValue -eq 1
             if (-not $nlaEnabled -and $Script:Config.EnforceRDP_NLA) {
                 Set-ItemProperty `
                     'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
@@ -2248,15 +2359,16 @@ if ($Script:Config.HardeningEngine_Enabled) {
 
     # LLMNR
     Invoke-SafeBlock -Label 'LLMNR check' -Block {
-        $llmnr = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' `
-                  -Name 'EnableMulticast' -ErrorAction SilentlyContinue).EnableMulticast
+        # Policy not set ($null): LLMNR is on, Windows' default.
+        $regPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+        $llmnr   = Get-RegistryValue -Path $regPath -Name 'EnableMulticast'
         if ($llmnr -ne 0) {
             if ($Script:Config.DisableLLMNR) {
-                $regPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
                 if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
                 Set-ItemProperty -Path $regPath -Name 'EnableMulticast' -Value 0 -Type DWord -Force
                 Log-Harden "LLMNR disabled  -  MITM attack vector eliminated"
-            } else { Log-Warn "LLMNR may be enabled  -  recommend disabling via GPO" }
+            } elseif ($null -eq $llmnr) { Log-Warn "LLMNR enabled (policy not set; Windows default is on)  -  recommend disabling via GPO" }
+            else { Log-Warn "LLMNR enabled by policy (EnableMulticast = $llmnr)  -  recommend disabling via GPO" }
         } else { Log-Summary "LLMNR  -  disabled (OK)" }
     }
 
@@ -2280,9 +2392,13 @@ if ($Script:Config.HardeningEngine_Enabled) {
 
     # LAN Manager auth level
     Invoke-SafeBlock -Label 'LAN Manager auth check' -Block {
+        # Not set ($null) is Windows' default, 3 (send NTLMv2 responses only)
+        # on Windows 7 / Server 2008 R2 and later - not below 3, so not weak.
         $lmPath    = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
-        $lmCurrent = (Get-ItemProperty $lmPath -Name 'LmCompatibilityLevel' -ErrorAction SilentlyContinue).LmCompatibilityLevel
-        if ($null -eq $lmCurrent -or $lmCurrent -lt 3) {
+        $lmCurrent = Get-RegistryValue -Path $lmPath -Name 'LmCompatibilityLevel'
+        if ($null -eq $lmCurrent) {
+            Log-Summary "LAN Manager auth level: not set, Windows default 3 (NTLMv2 responses only) (OK)"
+        } elseif ($lmCurrent -lt 3) {
             if ($Script:Config.SetLMAuthLevel) {
                 Set-ItemProperty -Path $lmPath -Name 'LmCompatibilityLevel' -Value $Script:Config.LMAuthLevel -Type DWord -Force
                 Log-Harden "LAN Manager auth level set to $($Script:Config.LMAuthLevel) (NTLMv2 only)"
@@ -2304,20 +2420,26 @@ if ($Script:Config.HardeningEngine_Enabled) {
 
     # Local admins
     Invoke-SafeBlock -Label 'Local admin check' -Block {
-        $admins = @(Get-LocalGroupMember -Group 'Administrators' -ErrorAction Stop)
+        $adminNames = Get-LocalAdminName
+        if ($null -eq $adminNames) {
+            # Unknown, not "no admins": no finding (ADR 0009).
+            Log-Info "Local admins  -  could not be listed (Get-LocalGroupMember and ADSI both failed); not checked"
+            return
+        }
+        $admins = @($adminNames)
         if ($admins.Count -gt 1) {
             Log-Warn "Local admins found ($($admins.Count) total)  -  review unexpected accounts:"
             # Domain Admins group is expected on domain-joined machines - suppress noise
             $suppressedAdminPatterns = @('Administrator$', '\\Domain Admins$')
             foreach ($a in $admins) {
-                $isSuppressed = $suppressedAdminPatterns | Where-Object { $a.Name -match $_ }
+                $isSuppressed = $suppressedAdminPatterns | Where-Object { $a -match $_ }
                 if (-not $isSuppressed) {
-                    Log-Warn "  $($a.Name)  -  REVIEW: should this account be an admin?"
-                    if ($a.Name -match '\\Domain Users$') {
+                    Log-Warn "  $a  -  REVIEW: should this account be an admin?"
+                    if ($a -match '\\Domain Users$') {
                         # Every domain user is a local admin - worst case
-                        Add-Finding -Severity High -Title "'$($a.Name)' is in local Administrators (ALL domain users have admin)" -Action 'Remove Domain Users from Administrators; grant admin per-user only where required'
+                        Add-Finding -Severity High -Title "'$a' is in local Administrators (ALL domain users have admin)" -Action 'Remove Domain Users from Administrators; grant admin per-user only where required'
                     } else {
-                        Add-Finding -Severity Medium -Title "Local admin: $($a.Name)" -Action 'Confirm this account requires admin rights; remove if not'
+                        Add-Finding -Severity Medium -Title "Local admin: $a" -Action 'Confirm this account requires admin rights; remove if not'
                     }
                 }
             }
@@ -2740,11 +2862,21 @@ if ($Script:Config.PersistenceEngine_Enabled) {
 
     # Defender exclusion audit
     Invoke-SafeBlock -Label 'Defender exclusions' -Block {
-        $excl = Get-MpPreference -ErrorAction Stop
+        # Get-MpPreference needs a running Defender. Where another AV owns the
+        # box and Defender is off it fails with an unformatted message
+        # ('Operation failed with the following error: 0x%1!x!', HOST-A3
+        # with Datto AV, 2026-09-26). The exclusions are unknown then: no finding.
+        $excl = $null
+        try { $excl = Get-MpPreference -ErrorAction Stop } catch { }
+        if ($null -eq $excl) {
+            Log-Info "Defender exclusions  -  not checked (Defender preferences unreadable; Defender off or not installed)"
+            return
+        }
+        $exclPaths = if ($excl.PSObject.Properties['ExclusionPath']) { @($excl.ExclusionPath | Where-Object { $_ }) } else { @() }
         $suspectExclusions = (New-Object 'System.Collections.Generic.List[string]')
         $legitimateExclPaths = @('C:\Windows','C:\Program Files','C:\ProgramData\Datto','C:\ProgramData\ShellKnight')
 
-        foreach ($path in $excl.ExclusionPath) {
+        foreach ($path in $exclPaths) {
             $isLegit = $legitimateExclPaths | Where-Object { $path -like "$_*" }
             if (-not $isLegit) {
                 Log-Warn "Suspicious Defender exclusion path: $path"
@@ -2907,19 +3039,25 @@ if ($Script:Config.FilesystemEngine_Enabled) {
         Invoke-SafeBlock -Label 'Windows Update Cache' -Block {
             $wuPath  = 'C:\Windows\SoftwareDistribution\Download'
             $wuSvcs  = @('wuauserv','bits','UsoSvc') | ForEach-Object { Get-Service -Name $_ -ErrorAction SilentlyContinue }
-            foreach ($svc in $wuSvcs) { if ($svc -and $svc.Status -eq 'Running') { Stop-Service -Name $svc.Name -Force -ErrorAction SilentlyContinue } }
-            Start-Sleep -Seconds 2
-            $wuCount = @(Get-ChildItem -LiteralPath $wuPath -Recurse -Force -ErrorAction SilentlyContinue -File).Count
-            if ($wuCount -gt 50000) {
-                $wuSize = Get-FolderSizeBytes $wuPath
-                Remove-Item -LiteralPath $wuPath -Recurse -Force -ErrorAction SilentlyContinue
-                New-Item -Path $wuPath -ItemType Directory -Force | Out-Null
-                $freedMB = [math]::Round($wuSize / 1MB, 1)
-                Log-Success "Cleaned Windows Update Cache  -  $wuCount files / $freedMB MB | Freed: $freedMB MB (fast delete)"
-            } else {
-                Remove-FolderContents -Path $wuPath -Label 'Windows Update Cache'
+            # The services are started again in 'finally': when the cleanup
+            # threw (an empty cache, before v2026.09.26.002), the restart
+            # below it never ran and Windows Update was left stopped.
+            try {
+                foreach ($svc in $wuSvcs) { if ($svc -and $svc.Status -eq 'Running') { Stop-Service -Name $svc.Name -Force -ErrorAction SilentlyContinue } }
+                Start-Sleep -Seconds 2
+                $wuCount = @(Get-ChildItem -LiteralPath $wuPath -Recurse -Force -ErrorAction SilentlyContinue -File).Count
+                if ($wuCount -gt 50000) {
+                    $wuSize = Get-FolderSizeBytes $wuPath
+                    Remove-Item -LiteralPath $wuPath -Recurse -Force -ErrorAction SilentlyContinue
+                    New-Item -Path $wuPath -ItemType Directory -Force | Out-Null
+                    $freedMB = [math]::Round($wuSize / 1MB, 1)
+                    Log-Success "Cleaned Windows Update Cache  -  $wuCount files / $freedMB MB | Freed: $freedMB MB (fast delete)"
+                } else {
+                    Remove-FolderContents -Path $wuPath -Label 'Windows Update Cache'
+                }
+            } finally {
+                foreach ($svc in $wuSvcs) { if ($svc) { Start-Service -Name $svc.Name -ErrorAction SilentlyContinue } }
             }
-            foreach ($svc in $wuSvcs) { if ($svc) { Start-Service -Name $svc.Name -ErrorAction SilentlyContinue } }
         }
 
         # Delivery Optimization Cache
@@ -3777,12 +3915,21 @@ if ($Script:Config.ReportingEngine_Enabled) {
 
     # PowerShell script block audit (4104 events)
     Invoke-SafeBlock -Label 'PS script block audit' -Block {
+        # Policy not set ($null): script block logging is off, Windows' default.
+        # Turning it on is opt-in ($SK_EnableScriptBlockLogging). Until
+        # v2026.09.26.002 the read threw wherever the policy was not set, so
+        # the unconditional write that stood here never ran on those boxes.
         $sbPath    = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
-        $sbEnabled = (Get-ItemProperty $sbPath -Name 'EnableScriptBlockLogging' -ErrorAction SilentlyContinue).EnableScriptBlockLogging
+        $sbEnabled = Get-RegistryValue -Path $sbPath -Name 'EnableScriptBlockLogging'
         if ($sbEnabled -ne 1) {
-            if (-not (Test-Path $sbPath)) { New-Item -Path $sbPath -Force | Out-Null }
-            Set-ItemProperty -Path $sbPath -Name 'EnableScriptBlockLogging' -Value 1 -Type DWord -Force
-            Log-Harden "PowerShell script block logging (4104) enabled  -  audit available on next run"
+            if ($Script:Config.EnableScriptBlockLogging) {
+                if (-not (Test-Path $sbPath)) { New-Item -Path $sbPath -Force | Out-Null }
+                Set-ItemProperty -Path $sbPath -Name 'EnableScriptBlockLogging' -Value 1 -Type DWord -Force
+                Log-Harden "PowerShell script block logging (4104) enabled  -  audit available on next run"
+            } else {
+                $sbState = if ($null -eq $sbEnabled) { 'policy not set' } else { "EnableScriptBlockLogging = $sbEnabled" }
+                Log-Info "PS script block audit  -  script block logging (4104) is off ($sbState); nothing to audit. Recommend enabling via GPO"
+            }
         } else {
             $obfuscKeywords = @('EncodedCommand','FromBase64String','IEX','Invoke-Expression',
                                 'DownloadString','WebClient','bypass','hidden','noprofile')
@@ -3808,20 +3955,21 @@ if ($Script:Config.ReportingEngine_Enabled) {
 
     # Credential exposure check
     Invoke-SafeBlock -Label 'Credential exposure' -Block {
-        $wdigest = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' `
-                    -Name 'UseLogonCredential' -ErrorAction SilentlyContinue).UseLogonCredential
+        # A value that is not set ($null) is Windows' default. WDigest keeps no
+        # plaintext credentials unless UseLogonCredential is 1 (Windows 8.1 /
+        # Server 2012 R2 and later), so only an explicit 1 is the IOC. LSA
+        # protection and VBS are off unless set.
+        $wdigest = Get-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' -Name 'UseLogonCredential'
         if ($wdigest -eq 1) {
             Log-IOC "WDigest ENABLED: plaintext credentials stored in memory  -  attackers can dump passwords"
             $Script:Counters.IOCsFound++
         } else { Log-Summary "WDigest  -  plaintext credential caching disabled (OK)" }
 
-        $lsaProtect = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' `
-                       -Name 'RunAsPPL' -ErrorAction SilentlyContinue).RunAsPPL
+        $lsaProtect = Get-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name 'RunAsPPL'
         if ($lsaProtect -ne 1) { Log-Warn "LSA protection (RunAsPPL) not enabled  -  recommend enabling" }
         else { Log-Summary "LSA protection  -  enabled (OK)" }
 
-        $credGuard = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' `
-                      -Name 'EnableVirtualizationBasedSecurity' -ErrorAction SilentlyContinue).EnableVirtualizationBasedSecurity
+        $credGuard = Get-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' -Name 'EnableVirtualizationBasedSecurity'
         if ($credGuard -eq 1) { Log-Summary "Credential Guard  -  enabled (OK)" }
         else { Log-Info "Credential Guard  -  not enabled (consider enabling on modern hardware)" }
     }
@@ -3886,9 +4034,10 @@ if ($Script:Config.ReportingEngine_Enabled) {
         if ($guest -and $guest.Enabled) { Log-Warn "  [CIS 2.2] Guest account ENABLED  -  disable it"; $cisIssues++ }
         else { Log-Info "  [CIS 2.2] Guest account disabled (OK)" }
 
-        # 2.3 LAN Manager auth
-        $lmAuth = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name 'LmCompatibilityLevel' -ErrorAction SilentlyContinue).LmCompatibilityLevel
-        if ($null -eq $lmAuth -or $lmAuth -lt 3) { Log-Warn "  [CIS 2.3] LAN Manager auth level is $lmAuth  -  recommend 5"; $cisIssues++ }
+        # 2.3 LAN Manager auth. Not set ($null) is Windows' default, 3.
+        $lmAuth = Get-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name 'LmCompatibilityLevel'
+        if ($null -eq $lmAuth) { Log-Info "  [CIS 2.3] LAN Manager auth level: not set, Windows default 3 (OK)" }
+        elseif ($lmAuth -lt 3) { Log-Warn "  [CIS 2.3] LAN Manager auth level is $lmAuth  -  recommend 5"; $cisIssues++ }
         else { Log-Info "  [CIS 2.3] LAN Manager auth level: $lmAuth (OK)" }
 
         # 2.5 Windows Firewall
@@ -3907,7 +4056,9 @@ if ($Script:Config.ReportingEngine_Enabled) {
         else { Log-Info "  [CIS 2.7] Remote Registry disabled (OK)" }
 
         # 2.8 AutoRun
-        $autoRun = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer' -Name 'NoDriveTypeAutoRun' -ErrorAction SilentlyContinue).NoDriveTypeAutoRun
+        # Not set ($null): Windows' default leaves AutoRun on for some drive
+        # types, so it counts as a CIS issue (log only, not scored).
+        $autoRun = Get-RegistryValue -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer' -Name 'NoDriveTypeAutoRun'
         if ($autoRun -ne 255) { Log-Warn "  [CIS 2.8] AutoRun not fully disabled  -  recommend NoDriveTypeAutoRun=255"; $cisIssues++ }
         else { Log-Info "  [CIS 2.8] AutoRun disabled (OK)" }
 
@@ -3974,8 +4125,11 @@ if ($Script:WuLastWarn)                           { $Script:SecurityScore -= 15 
 if ($inactiveAccounts.Count -gt 0)               { $Script:SecurityScore -= [math]::Min(15, $inactiveAccounts.Count * 5) }
 try { $smb1Sc = Get-SmbServerConfiguration -ErrorAction Stop | Select-Object -ExpandProperty EnableSMB1Protocol
       if ($smb1Sc) { $Script:SecurityScore -= 20 } } catch { }
-try { $lmSc = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name 'LmCompatibilityLevel' -ErrorAction Stop).LmCompatibilityLevel
-      if ($null -eq $lmSc -or $lmSc -lt 3) { $Script:SecurityScore -= 15 } } catch { }
+# Only a level that is set and below 3 is scored. Not set is Windows' default,
+# 3; unreadable is unknown (ADR 0009). Before v2026.09.26.002 the read threw
+# for both and the catch kept them unscored; this keeps that outcome.
+$lmSc = Get-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name 'LmCompatibilityLevel'
+if ($null -ne $lmSc -and $lmSc -lt 3) { $Script:SecurityScore -= 15 }
 try { $fwSc = @(Get-NetFirewallProfile -ErrorAction Stop | Where-Object { $_.Enabled -eq $false })
       if ($fwSc.Count -gt 0) { $Script:SecurityScore -= 15 } } catch { }
 # Only a length the engine read is scored; $null (unknown) costs nothing.
@@ -4030,7 +4184,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.09.26.001 - Report"
+Log-Info "  ShellKnight v2026.09.26.002 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -4043,7 +4197,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.09.26.001 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.09.26.002 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -4319,7 +4473,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.09.26.001'
+    version          = 'v2026.09.26.002'
     device_id        = $Script:DeviceId
     hardware_type    = $Script:MachineInfo['Hardware Type']
     site_name        = $SK_SiteName
