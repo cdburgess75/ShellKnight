@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    ShellKnight v2026.09.25.003  -  Enterprise Endpoint Security & Remediation Tool
+    ShellKnight v2026.10.13.001  -  Enterprise Endpoint Security & Remediation Tool
 
 .DESCRIPTION
     Automated endpoint security remediation, threat detection, hardening, and
@@ -18,9 +18,9 @@
     C. David Burgess  -  PTech LLC
 
 .VERSION
-    Version    : v2026.09.25.003
-    Released   : 2026-09-25
-    Prior      : v2026.09.25.002
+    Version    : v2026.10.13.001
+    Released   : 2026-10-13
+    Prior      : v2026.09.25.003
 
 .ENGINES
     Phase 1  -  Intel Engine        : Threat intelligence download and cache
@@ -33,6 +33,15 @@
     Phase 8  -  Reporting Engine    : Reporting, trending, and extended checks
 
 .CHANGELOG
+    v2026.10.13.001 - Windows Admin Center's tasks on Azure VMs are no longer
+             removed. They run PowerShell with -WindowStyle Hidden from the
+             Azure extension folder, which the scheduled-task check matched as
+             obfuscation, so the Process Engine deleted
+             WindowsAdminCenterHeartbeatCheck and
+             WindowsAdminCenterTroubleshootTask on its first run. Commands run
+             from C:\Packages\Plugins\Microsoft.AdminCenter.AdminCenter\ are
+             now in LegitTaskPaths.
+
     v2026.09.25.003 - OS end of life is Microsoft's date for the build AND the
              edition. The engine looked it up by build number only, one date
              per build, and several were years late: 19045 (Windows 10 22H2)
@@ -497,7 +506,7 @@ param()
 
 
 # ==============================================================================
-# SHELLKNIGHT v2026.09.25.003 CONFIGURATION
+# SHELLKNIGHT v2026.10.13.001 CONFIGURATION
 # All settings are configured here. No external config files required.
 # Each engine can be independently enabled or disabled.
 # ==============================================================================
@@ -690,7 +699,7 @@ try {
 
 # Runtime Config Object - single source of truth for all engines
 $Script:Config = [PSCustomObject]@{
-    Version                  = 'v2026.09.25.003'
+    Version                  = 'v2026.10.13.001'
     # Intel Engine
     IntelEngine_Enabled      = $SK_IntelEngine_Enabled
     IntelEngine_CheckUpdates = $SK_IntelEngine_CheckForUpdates
@@ -800,7 +809,11 @@ $Script:LegitProcessNames = (New-Object 'System.Collections.Generic.HashSet[stri
 
 $Script:LegitTaskPaths = @(
     '*AppData\Roaming\Zoom\bin\*','*Teams\*','*Slack\*','*Spotify\*',
-    '*Discord\*','*Cricut*','*AppData\Roaming\PCDr\*','*BundleApplicationRepairTool.exe*'
+    '*Discord\*','*Cricut*','*AppData\Roaming\PCDr\*','*BundleApplicationRepairTool.exe*',
+    # Windows Admin Center's Azure VM extension. Its heartbeat and troubleshoot
+    # tasks run PowerShell -WindowStyle Hidden, which the obfuscation check
+    # matches. The folder is the Azure guest agent's, writable only by admins.
+    '*\Packages\Plugins\Microsoft.AdminCenter.AdminCenter\*'
 )
 
 # Task Scheduler path prefixes for known-legitimate Microsoft system tasks.
@@ -1144,7 +1157,7 @@ $Script:UseNewPSFeatures = $Script:PSVer -ge 5
 
 # Banner
 $bannerWidth = 78
-$version     = 'ShellKnight v2026.09.25.003'
+$version     = 'ShellKnight v2026.10.13.001'
 $hostname    = $env:COMPUTERNAME
 $timestamp   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $psver       = "PS $($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
@@ -3472,7 +3485,7 @@ $freeAfterGB = if ($diskAfter) { [math]::Round($diskAfter.FreeSpace / 1GB, 1) } 
 $sepLine = '=' * 80
 
 Log-Info $sepLine
-Log-Info "  ShellKnight v2026.09.25.003 - Report"
+Log-Info "  ShellKnight v2026.10.13.001 - Report"
 Log-Info "  Hostname  : $($env:COMPUTERNAME)"
 Log-Info "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Log-Info "  Runtime   : $runtime seconds"
@@ -3485,7 +3498,7 @@ Log-Info $sepLine
 $bannerWidth2 = 78
 Write-Host ''
 Write-Host "  $sepLine" -ForegroundColor Cyan
-Write-Host "  ShellKnight v2026.09.25.003 - Report" -ForegroundColor Cyan
+Write-Host "  ShellKnight v2026.10.13.001 - Report" -ForegroundColor Cyan
 Write-Host "  Hostname  : $($env:COMPUTERNAME)" -ForegroundColor White
 Write-Host "  Run Date  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  Runtime   : $runtime seconds" -ForegroundColor White
@@ -3757,7 +3770,7 @@ $jsonStamp= Get-Date -Format 'yyyy-MM-dd_HHmm'
 $jsonPath = "$jsonDir\ShellKnight_${jsonStamp}_$($env:COMPUTERNAME).json"
 
 $jsonData = [ordered]@{
-    version          = 'v2026.09.25.003'
+    version          = 'v2026.10.13.001'
     device_id        = $Script:DeviceId
     hardware_type    = $Script:MachineInfo['Hardware Type']
     site_name        = $SK_SiteName
